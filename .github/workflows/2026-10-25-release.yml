@@ -49,9 +49,7 @@ jobs:
           export DMG_SHA256="$(shasum -a 256 "dist/$DMG_NAME" | awk '{print $1}')"
           export DMG_SIZE="$(stat -f '%z' "dist/$DMG_NAME")"
           python -c 'import json,os,pathlib; version=os.environ["VERSION"]; repo=os.environ["GITHUB_REPOSITORY"]; name=os.environ["DMG_NAME"]; data={"app_name":"Canvas Lecture AI.app","dmg_url":f"https://github.com/{repo}/releases/download/v{version}/{name}","minimum_macos":"14.0","release_url":f"https://github.com/{repo}/releases/tag/v{version}","sha256":os.environ["DMG_SHA256"],"size":int(os.environ["DMG_SIZE"]),"version":version}; pathlib.Path("dist",os.environ["MANIFEST_NAME"]).write_text(json.dumps(data,sort_keys=True,separators=(",",":")),encoding="utf-8")'
-          printf '%s' "$UPDATE_SIGNING_PRIVATE_KEY" > "$RUNNER_TEMP/update-signing-key.pem"
-          openssl pkeyutl -sign -rawin -inkey "$RUNNER_TEMP/update-signing-key.pem" -in "dist/$MANIFEST_NAME" -out "dist/$MANIFEST_NAME.sig"
-          rm "$RUNNER_TEMP/update-signing-key.pem"
+          python -c 'import os,pathlib; from cryptography.hazmat.primitives import serialization; key=serialization.load_pem_private_key(os.environ["UPDATE_SIGNING_PRIVATE_KEY"].encode(),password=None); manifest=pathlib.Path("dist",os.environ["MANIFEST_NAME"]); manifest.with_suffix(manifest.suffix+".sig").write_bytes(key.sign(manifest.read_bytes()))'
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
