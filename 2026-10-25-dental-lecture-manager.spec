@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from imageio_ffmpeg import get_ffmpeg_exe
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 ROOT = Path(SPEC).resolve().parent
 PLAYWRIGHT_BROWSERS = ROOT / "build" / "playwright-browsers"
@@ -18,9 +18,15 @@ datas = [
     (str(ROOT / "app" / "web" / "static"), "app/web/static"),
     (str(ROOT / "config.example.toml"), "."),
 ]
+datas += collect_data_files("mlx_whisper")
+datas += collect_data_files("mlx", includes=["lib/mlx.metallib"])
 
-hiddenimports = collect_submodules("openai") + [
+hiddenimports = collect_submodules("openai") + collect_submodules(
+    "mlx_whisper", filter=lambda name: name != "mlx_whisper.torch_whisper"
+) + [
     "app.main",
+    "mlx._os_warning",
+    "mlx._reprlib_fix",
     "uvicorn.logging",
     "uvicorn.loops.auto",
     "uvicorn.protocols.http.auto",
@@ -36,7 +42,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib", "numpy"],
+    excludes=["tkinter", "matplotlib", "torch", "mlx_whisper.torch_whisper"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
@@ -70,9 +76,9 @@ app = BUNDLE(
     bundle_identifier="com.hanlin317.dentallecturemanager",
     info_plist={
         "CFBundleDisplayName": "Dental Lecture Manager",
-        "CFBundleShortVersionString": "0.1.0",
-        "CFBundleVersion": "1",
-        "LSMinimumSystemVersion": "13.0",
+        "CFBundleShortVersionString": "0.2.0",
+        "CFBundleVersion": "2",
+        "LSMinimumSystemVersion": "14.0",
         "NSHighResolutionCapable": True,
     },
 )

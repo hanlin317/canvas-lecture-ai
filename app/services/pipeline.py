@@ -138,6 +138,16 @@ class PipelineService:
             begin(lecture_step("Exporting NotebookLM source"))
             if transcript_path.exists():
                 result["notebooklm"] = self._export_notebooklm(lecture, context, transcript_path)
+            else:
+                result["notebooklm"] = "unavailable"
+                self.db.upsert_processing(
+                    ProcessingRecord(
+                        lecture_id=lecture.id or 0,
+                        stage="notebooklm",
+                        status="unavailable",
+                        error_message="A transcript is required before creating a NotebookLM source.",
+                    )
+                )
             finish()
         if options.ai_notes:
             destination = f"{options.ai_note_format.upper()} in the preview folder"
@@ -146,6 +156,16 @@ class PipelineService:
             begin(lecture_step(f"Generating AI notes and saving {destination}"))
             if transcript_path.exists():
                 result["ai_notes"] = await self._generate_ai_note(lecture, context, transcript_path, options)
+            else:
+                result["ai_notes"] = "unavailable"
+                self.db.upsert_processing(
+                    ProcessingRecord(
+                        lecture_id=lecture.id or 0,
+                        stage="ai_note",
+                        status="unavailable",
+                        error_message="A transcript is required before generating AI notes.",
+                    )
+                )
             finish()
         begin(lecture_step("Updating lecture manifest"))
         if lecture.topic_id:
@@ -163,17 +183,41 @@ class PipelineService:
         steps_per_lecture = self.stage_count(options)
         total_steps = max(1, steps_per_lecture * len(lecture_ids))
         for index, lecture_id in enumerate(lecture_ids, start=1):
-            output.append(
-                await self.run_lecture(
-                    lecture_id,
-                    options,
-                    progress=progress,
-                    start_step=(index - 1) * steps_per_lecture,
-                    total_steps=total_steps,
-                    lecture_position=index,
-                    lecture_total=len(lecture_ids),
+            try:
+                output.append(
+                    await self.run_lecture(
+                        lecture_id,
+                        options,
+                        progress=progress,
+                        start_step=(index - 1) * steps_per_lecture,
+                        total_steps=total_steps,
+                        lecture_position=index,
+                        lecture_total=len(lecture_ids),
+                    )
                 )
-            )
+            except Exception as exc:
+                lecture = self.db.get_lecture(lecture_id)
+                title = (
+                    lecture.custom_title or lecture.original_title
+                    if lecture
+                    else f"Lecture {lecture_id}"
+                )
+                logger.exception("Pipeline failed for %s", title)
+                self.db.upsert_processing(
+                    ProcessingRecord(
+                        lecture_id=lecture_id,
+                        stage="pipeline",
+                        status="failed",
+                        error_message=str(exc),
+                    )
+                )
+                output.append({"lecture": title, "error": str(exc)})
+                if progress:
+                    progress(
+                        f"Lecture {index} of {len(lecture_ids)}: Failed - {title}",
+                        index * steps_per_lecture,
+                        total_steps,
+                    )
         return output
 
     def _record_resolution_failure(self, lecture: Lecture, stage: str, error: str) -> None:
@@ -516,13 +560,31 @@ class PipelineService:
             transcript=transcript,
         )
         preview_dir = expand_path("local_data/previews")
-        output = export_ai_note(note, preview_dir, context, options.ai_note_format)
+        output = export_ai_note(
+            note,
+            preview_dir,
+            context,
+            options.ai_note_format,
+            overwrite=options.overwrite,
+        )
         if options.save_obsidian or self.settings.ai.auto_save_notes:
             vault = self.settings.paths.obsidian_vault
             if not vault:
                 raise RuntimeError("Obsidian vault path is not configured.")
             destination = Path(topic["obsidian_directory"]) if topic and topic["obsidian_directory"] else expand_path(vault) / context.course_code / context.topic_name
-            save_obsidian_note(note, destination, context, overwrite=options.overwrite)
+            markdown_output = save_obsidian_note(
+                note, destination, context, overwrite=options.overwrite
+            )
+            output = markdown_output
+            if options.ai_note_format != "markdown":
+                output = export_ai_note(
+                    note,
+                    destination,
+                    context,
+                    options.ai_note_format,
+                    overwrite=options.overwrite,
+                    filename_stem=context.title,
+                )
         self.db.upsert_processing(
             ProcessingRecord(
                 lecture_id=lecture.id or 0,

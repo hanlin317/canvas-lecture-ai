@@ -48,7 +48,7 @@ def save_obsidian_note(markdown: str, destination_dir: Path, context: LectureCon
     destination_dir.mkdir(parents=True, exist_ok=True)
     path = destination_dir / f"{safe_filename(context.title)}.md"
     if path.exists() and not overwrite:
-        raise FileExistsError(f"Obsidian note already exists: {path}")
+        return path
     tmp = path.with_suffix(path.suffix + ".part")
     tmp.write_text(markdown, encoding="utf-8")
     tmp.replace(path)
@@ -60,18 +60,19 @@ def export_ai_note(
     destination_dir: Path,
     context: LectureContext,
     note_format: str,
+    overwrite: bool = False,
+    filename_stem: str | None = None,
 ) -> Path:
     suffix = AI_NOTE_FORMATS.get(note_format)
     if not suffix:
         raise ValueError(f"Unsupported AI note format: {note_format}")
     destination_dir.mkdir(parents=True, exist_ok=True)
-    filename = lecture_stem(
-        context.course_code,
-        context.topic_name,
-        context.lecture_number,
-        context.title,
+    filename = filename_stem or lecture_stem(
+        context.course_code, context.topic_name, context.lecture_number, context.title
     )
     path = destination_dir / f"{filename}{suffix}"
+    if path.exists() and not overwrite:
+        return path
     if note_format == "markdown":
         payload = markdown.encode("utf-8")
     elif note_format == "docx":

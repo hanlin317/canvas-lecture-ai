@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import sys
 import zipfile
 from pathlib import Path
 from subprocess import CompletedProcess
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -11,7 +13,8 @@ import pytest
 from app import config as app_config
 from app.ai import factory as ai_factory
 from app.ai.factory import AI_PROVIDER_SPECS, api_key_status, get_ai_provider, load_api_key
-from app.canvas.client import CanvasClient
+from app.canvas.client import CanvasClient, _next_page_url
+from app.canvas.models import CanvasCourseSummary
 from app.config import load_settings, prepare_runtime_environment, save_web_settings
 from app.database import Database
 from app.echo360.client import (
@@ -43,6 +46,7 @@ from app.services.discovery import (
 from app.services.manifest import export_topic_manifest
 from app.services.pipeline import PipelineService
 from app.transcripts.cleaner import clean_plain_transcript, clean_vtt
+from app.transcripts.whisper import transcribe_with_mlx_whisper
 from app.utils import lecture_stem, number_for_position, safe_filename, sha256_text
 
 
@@ -110,6 +114,30 @@ STYLE
 
 def test_plain_transcript_cleaning() -> None:
     assert clean_plain_transcript(" hello   world \nhello   world\n") == "hello world\n"
+
+
+def test_bundled_mlx_whisper_writes_local_transcript(tmp_path: Path, monkeypatch) -> None:
+    video = tmp_path / "lecture.mp4"
+    video.write_bytes(b"video")
+    output = tmp_path / "lecture.whisper.txt"
+    calls = []
+    fake_module = SimpleNamespace(
+        transcribe=lambda path, path_or_hf_repo: (
+            calls.append((path, path_or_hf_repo)) or {"text": "Local transcript"}
+        )
+    )
+    monkeypatch.setattr("app.transcripts.whisper.importlib.util.find_spec", lambda _name: object())
+    monkeypatch.setitem(sys.modules, "mlx_whisper", fake_module)
+
+    result = transcribe_with_mlx_whisper(
+        video,
+        output,
+        model="mlx-community/whisper-large-v3-turbo-q4",
+    )
+
+    assert result == output
+    assert output.read_text(encoding="utf-8") == "Local transcript\n"
+    assert calls == [(str(video), "mlx-community/whisper-large-v3-turbo-q4")]
 
 
 def test_hash_is_content_based() -> None:
@@ -244,6 +272,87 @@ def test_canvas_recognizes_external_sso_as_expired() -> None:
     )
 
 
+def test_canvas_pagination_link_parser() -> None:
+    header = (
+        '<https://canvas.example/api/v1/courses?page=1>; rel="current", '
+        '<https://canvas.example/api/v1/courses?page=2>; rel="next", '
+        '<https://canvas.example/api/v1/courses?page=4>; rel="last"'
+    )
+
+    assert _next_page_url(header) == "https://canvas.example/api/v1/courses?page=2"
+    assert _next_page_url(None) is None
+
+
+@pytest.mark.asyncio
+async def test_canvas_token_api_follows_all_pages(monkeypatch) -> None:
+    class FakeResponse:
+        def __init__(self, payload, link="") -> None:
+            self.payload = payload
+            self.headers = {"link": link}
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return self.payload
+
+    calls = []
+    responses = [
+        FakeResponse(
+            [{"id": 1}],
+            '<https://canvas.example/api/v1/courses?page=2>; rel="next"',
+        ),
+        FakeResponse([{"id": 2}]),
+    ]
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, params=None, headers=None):
+            calls.append((url, params, headers))
+            return responses.pop(0)
+
+    settings = load_settings()
+    settings.canvas.base_url = "https://canvas.example"
+    monkeypatch.setenv("CANVAS_ACCESS_TOKEN", "token")
+    monkeypatch.setattr("app.canvas.client.httpx.AsyncClient", lambda **_kwargs: FakeClient())
+
+    records = await CanvasClient(settings)._api_get(
+        "/api/v1/courses", {"per_page": "100"}
+    )
+
+    assert records == [{"id": 1}, {"id": 2}]
+    assert calls[0][1] == {"per_page": "100"}
+    assert calls[1][0].endswith("page=2")
+    assert calls[1][1] is None
+
+
+@pytest.mark.asyncio
+async def test_course_sync_requests_every_accessible_course(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    settings = load_settings()
+    service = DiscoveryService(db, settings)
+    service.canvas.list_courses = AsyncMock(
+        return_value=[
+            CanvasCourseSummary(
+                canvas_id="1",
+                code="2025_ARCH1000",
+                name="Archived Course",
+                url="https://canvas.example/courses/1",
+            )
+        ]
+    )
+
+    courses = await service.sync_canvas_courses()
+
+    service.canvas.list_courses.assert_awaited_once_with(active_only=False)
+    assert [course.code for course in courses] == ["2025_ARCH1000"]
+
+
 def test_ai_provider_catalog_and_keychain_lookup(monkeypatch) -> None:
     names = {spec.name for spec in AI_PROVIDER_SPECS}
     assert {"openai", "anthropic", "gemini", "openrouter", "xai", "deepseek", "mistral"} <= names
@@ -323,11 +432,19 @@ course: SDDM6321
     markdown = export_ai_note(note, tmp_path, context, "markdown")
     pdf = export_ai_note(note, tmp_path, context, "pdf")
     word = export_ai_note(note, tmp_path, context, "docx")
+    vault_pdf = export_ai_note(
+        note,
+        tmp_path / "vault",
+        context,
+        "pdf",
+        filename_stem=context.title,
+    )
 
     assert markdown.read_text(encoding="utf-8") == note
     assert pdf.read_bytes().startswith(b"%PDF-1.4")
     assert b"Periodontal Maintenance" in pdf.read_bytes()
     assert word.read_bytes().startswith(b"PK")
+    assert vault_pdf.name == "Periodontal Maintenance.pdf"
     with zipfile.ZipFile(word) as archive:
         document = archive.read("word/document.xml").decode("utf-8")
     assert "Periodontal Maintenance" in document
@@ -628,3 +745,48 @@ async def test_pipeline_progress_identifies_each_lecture(tmp_path: Path) -> None
     assert any(message == "Lecture 1 of 2: Preparing - TMJ" for message in messages)
     assert any(message == "Lecture 2 of 2: Updating lecture manifest - Trauma" for message in messages)
     assert progress[-1][1:] == (4, 4)
+
+
+@pytest.mark.asyncio
+async def test_pipeline_continues_after_one_lecture_fails(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    settings = load_settings()
+    course = db.upsert_course(Course(canvas_id="1", code="DENT1000", name="Dental"))
+    topic = db.upsert_topic(Topic(course_id=course.id or 0, name="Oral Medicine"))
+    first = db.upsert_lecture(
+        Lecture(
+            source_id="rec-1",
+            course_id=course.id or 0,
+            topic_id=topic.id,
+            original_title="First",
+        )
+    )
+    second = db.upsert_lecture(
+        Lecture(
+            source_id="rec-2",
+            course_id=course.id or 0,
+            topic_id=topic.id,
+            original_title="Second",
+        )
+    )
+    service = PipelineService(db, settings)
+    service.run_lecture = AsyncMock(
+        side_effect=[RuntimeError("first failed"), {"lecture": "Second", "transcript": "complete"}]
+    )
+    progress = []
+
+    results = await service.run_many(
+        [first.id or 0, second.id or 0],
+        PipelineOptions(
+            download_video=False,
+            download_transcript=False,
+            notebooklm=False,
+        ),
+        progress=lambda message, completed, total: progress.append((message, completed, total)),
+    )
+
+    assert results[0] == {"lecture": "First", "error": "first failed"}
+    assert results[1]["lecture"] == "Second"
+    assert service.run_lecture.await_count == 2
+    assert db.list_recent_processing(course.id or 0)[0]["stage"] == "pipeline"
+    assert progress[0][1:] == (2, 4)

@@ -117,14 +117,24 @@ class CanvasClient:
         token = os.environ.get("CANVAS_ACCESS_TOKEN")
         if not token:
             raise CanvasAuthError("CANVAS_ACCESS_TOKEN not set; use browser diagnostics/fallback.")
+        records: list[dict] = []
+        next_url: str | None = path
+        next_params = params
         async with httpx.AsyncClient(base_url=self.base_url, timeout=30) as client:
-            response = await client.get(
-                path,
-                params=params,
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            response.raise_for_status()
-            return response.json()
+            while next_url:
+                response = await client.get(
+                    next_url,
+                    params=next_params,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                response.raise_for_status()
+                page = response.json()
+                if not isinstance(page, list):
+                    raise CanvasAuthError("Canvas API response was not the expected list shape.")
+                records.extend(page)
+                next_url = _next_page_url(response.headers.get("link"))
+                next_params = None
+        return records
 
     async def _api_get_with_browser_session(
         self,
@@ -141,23 +151,35 @@ class CanvasClient:
 
         query = f"?{urlencode(params or {}, doseq=True)}" if params else ""
         api_url = urljoin(self.base_url + "/", path.lstrip("/")) + query
+        records: list[dict] = []
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context(storage_state=str(self.state_path))
-            response = await context.request.get(api_url)
-            result = {"ok": response.ok, "status": response.status, "text": await response.text()}
+            next_url: str | None = api_url
+            while next_url:
+                response = await context.request.get(next_url)
+                if not response.ok:
+                    status = response.status
+                    await browser.close()
+                    raise CanvasAuthError(
+                        f"Canvas browser-session API request failed with HTTP {status}."
+                    )
+                try:
+                    page = json.loads(await response.text())
+                except json.JSONDecodeError as exc:
+                    await browser.close()
+                    raise CanvasAuthError(
+                        "Canvas returned a non-JSON API response; saved session may be expired."
+                    ) from exc
+                if not isinstance(page, list):
+                    await browser.close()
+                    raise CanvasAuthError("Canvas API response was not the expected list shape.")
+                records.extend(page)
+                next_url = _next_page_url(response.headers.get("link"))
             await browser.close()
-        if not result["ok"]:
-            raise CanvasAuthError(f"Canvas browser-session API request failed with HTTP {result['status']}.")
-        try:
-            data = json.loads(result["text"])
-        except json.JSONDecodeError as exc:
-            raise CanvasAuthError("Canvas returned a non-JSON API response; saved session may be expired.") from exc
-        if not isinstance(data, list):
-            raise CanvasAuthError("Canvas API response was not the expected list shape.")
-        return data
+        return records
 
-    async def list_courses(self, active_only: bool = True) -> list[CanvasCourseSummary]:
+    async def list_courses(self, active_only: bool = False) -> list[CanvasCourseSummary]:
         if not os.environ.get("CANVAS_ACCESS_TOKEN"):
             return await self.list_courses_from_browser(active_only=active_only)
         params = {"enrollment_state": "active"} if active_only else {}
@@ -176,7 +198,7 @@ class CanvasClient:
             )
         return courses
 
-    async def list_courses_from_browser(self, active_only: bool = True) -> list[CanvasCourseSummary]:
+    async def list_courses_from_browser(self, active_only: bool = False) -> list[CanvasCourseSummary]:
         if not self.has_session():
             raise CanvasAuthError(
                 "No Canvas API token or saved browser session found. Run `python -m app login` first, "
@@ -433,3 +455,13 @@ class CanvasClient:
             await browser.close()
         output_path.write_text(json.dumps({"base_url": self.base_url, "links": links}, indent=2), encoding="utf-8")
         return output_path
+
+
+def _next_page_url(link_header: str | None) -> str | None:
+    if not link_header:
+        return None
+    for entry in link_header.split(","):
+        match = re.match(r'\s*<([^>]+)>\s*;\s*rel="?([^";]+)"?', entry)
+        if match and match.group(2).strip().lower() == "next":
+            return match.group(1)
+    return None

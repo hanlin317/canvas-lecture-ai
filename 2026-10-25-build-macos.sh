@@ -9,7 +9,7 @@ BUILD_VENV="$ROOT/build/packaging-venv"
 BROWSER_DIR="$ROOT/build/playwright-browsers"
 DIST_DIR="$ROOT/dist"
 WORK_DIR="$ROOT/build/pyinstaller-work"
-STAGE_DIR="$ROOT/build/dmg-stage"
+STAGE_DIR="$ROOT/build/2026-10-25-dmg-stage-$$"
 VERSION="$($PYTHON_BIN -c 'import pathlib,tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
 APP_NAME="Dental Lecture Manager"
 DMG_PATH="$DIST_DIR/Dental-Lecture-Manager-v$VERSION-arm64.dmg"
@@ -55,5 +55,5 @@ hdiutil create \
   -ov \
   "$DMG_PATH"
 
-shasum -a 256 "$DMG_PATH" > "$DMG_PATH.sha256"
+(cd "$DIST_DIR" && shasum -a 256 "$(basename "$DMG_PATH")" > "$(basename "$DMG_PATH").sha256")
 printf 'Built %s\n' "$DMG_PATH"

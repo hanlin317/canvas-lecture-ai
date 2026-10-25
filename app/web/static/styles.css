@@ -46,6 +46,38 @@ main {
   background: #edf9f2;
 }
 .wide { grid-column: 1 / -1; }
+.setup-progress {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid #d8e0e7;
+  border-radius: 8px;
+  background: #d8e0e7;
+}
+.setup-step {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 11px 13px;
+  background: #fff;
+  color: #526574;
+}
+.setup-step strong {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  border: 1px solid #b8c5d1;
+  border-radius: 50%;
+  font-size: 12px;
+}
+.setup-step.current { color: #113f67; font-weight: 700; }
+.setup-step.current strong { border-color: #113f67; }
+.setup-step.done { color: #0b6e4f; }
+.setup-step.done strong { border-color: #0b6e4f; background: #e7f6ee; }
 .job-progress {
   border: 1px solid #7ea4bf;
   border-radius: 8px;
@@ -110,6 +142,16 @@ button, select, input:not([type="checkbox"]) {
 }
 .settings-panel { grid-column: 1 / -1; }
 .settings-panel h3 { margin: 0 0 10px; }
+.settings-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  font-size: 18px;
+  font-weight: 700;
+}
+.settings-panel[open] .settings-summary { margin-bottom: 16px; }
 .settings-columns {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.8fr);
@@ -197,6 +239,23 @@ button {
   color: white;
   border-color: #0b6e4f;
   cursor: pointer;
+}
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  box-sizing: border-box;
+  border: 1px solid #0b6e4f;
+  border-radius: 6px;
+  padding: 0 12px;
+  background: #0b6e4f;
+  color: white;
+  text-decoration: none;
+}
+.notebooklm-handoff {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
 }
 button:disabled {
   background: #9aa8b3;
@@ -324,6 +383,7 @@ th:nth-child(4), td:nth-child(4) { width: 96px; }
 th:last-child, td:last-child { width: 72px; }
 @media (max-width: 800px) {
   main { grid-template-columns: minmax(0, 1fr); }
+  .setup-progress { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .settings-columns { grid-template-columns: minmax(0, 1fr); gap: 22px; }
   .app-config-form { grid-template-columns: 1fr; }
   .app-config-form > span:empty { display: none; }

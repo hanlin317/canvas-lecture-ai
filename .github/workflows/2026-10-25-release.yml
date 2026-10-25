@@ -26,6 +26,14 @@ jobs:
           pytest -q
       - name: Build arm64 DMG
         run: bash 2026-10-25-build-macos.sh
+      - name: Verify packaged runtime
+        run: |
+          DLM_DATA_DIR="$RUNNER_TEMP/dlm-self-check" \
+            'dist/Dental Lecture Manager.app/Contents/MacOS/Dental Lecture Manager' \
+            self-check --output "$RUNNER_TEMP/dlm-self-check.json"
+          python -c 'import json, os; data=json.load(open(os.environ["RUNNER_TEMP"] + "/dlm-self-check.json")); assert data["status"] == "ok" and data["mlx_whisper"]'
+          codesign --verify --deep --strict 'dist/Dental Lecture Manager.app'
+          cd dist && shasum -a 256 -c *.dmg.sha256
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib
 import json
+import os
 import socket
 import threading
 import time
@@ -36,6 +38,8 @@ def main() -> None:
     pipeline.add_argument("--overwrite", action="store_true")
     diag = sub.add_parser("diagnose-canvas")
     diag.add_argument("--output", default="local_data/diagnostics/canvas_links.json")
+    check = sub.add_parser("self-check")
+    check.add_argument("--output", required=True)
     args = parser.parse_args()
 
     if args.cmd is None:
@@ -88,6 +92,22 @@ def main() -> None:
     elif args.cmd == "diagnose-canvas":
         path = asyncio.run(CanvasClient(settings).capture_browser_diagnostics(Path(args.output)))
         print(path)
+    elif args.cmd == "self-check":
+        module = importlib.import_module("mlx_whisper")
+        output = Path(args.output).expanduser()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "mlx_whisper": bool(getattr(module, "transcribe", None)),
+                    "ffmpeg": os.environ.get("DLM_FFMPEG", ""),
+                    "playwright_browsers": os.environ.get("PLAYWRIGHT_BROWSERS_PATH", ""),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
 
 def _jsonable(value):

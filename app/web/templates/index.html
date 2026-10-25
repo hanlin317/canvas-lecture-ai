@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Dental Lecture Manager</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20261025-5">
+  <link rel="stylesheet" href="/static/styles.css?v=20261025-6">
 </head>
 <body>
   <header>
@@ -45,13 +45,28 @@
     <section class="alert message wide">{{ message }}</section>
     {% endif %}
 
+    <section class="setup-progress wide" aria-label="Setup progress">
+      <div class="setup-step {{ 'done' if settings.canvas.base_url else 'current' }}">
+        <strong>1</strong><span>Canvas address</span>
+      </div>
+      <div class="setup-step {{ 'done' if canvas_session_status == 'saved' else ('current' if settings.canvas.base_url else '') }}">
+        <strong>2</strong><span>Canvas login</span>
+      </div>
+      <div class="setup-step {{ 'done' if courses else ('current' if canvas_session_status == 'saved' else '') }}">
+        <strong>3</strong><span>Sync courses</span>
+      </div>
+      <div class="setup-step {{ 'done' if lectures else ('current' if courses else '') }}">
+        <strong>4</strong><span>Discover lectures</span>
+      </div>
+    </section>
+
     <section class="panel">
       <h2>Authentication</h2>
-      <div class="status {{ 'ok' if canvas_session_status == 'valid' else 'warn' }}">
+      <div class="status {{ 'ok' if canvas_session_status == 'saved' else 'warn' }}">
         Canvas session: {{ canvas_session_status }}
       </div>
-      <form method="post" action="/login"><button>Login to Canvas</button></form>
-      <form method="post" action="/courses/sync"><button>Sync Canvas Courses</button></form>
+      <form method="post" action="/login"><button {% if not settings.canvas.base_url %}disabled{% endif %}>Login to Canvas</button></form>
+      <form method="post" action="/courses/sync"><button {% if canvas_session_status != 'saved' %}disabled{% endif %}>Sync Canvas Courses</button></form>
     </section>
 
     <section class="panel">
@@ -61,7 +76,7 @@
           {% for group in course_groups %}
           <optgroup label="{{ group.label }}">
           {% for course in group.courses %}
-            <option value="{{ course.code }}" {% if selected_course and course.id == selected_course.id %}selected{% endif %}>{{ course.code }} - {{ course.name }}</option>
+            <option value="{{ course.id }}" {% if selected_course and course.id == selected_course.id %}selected{% endif %}>{{ course.code }} - {{ course.name }}</option>
           {% endfor %}
           </optgroup>
           {% endfor %}
@@ -72,7 +87,7 @@
       <details class="course-grouping-controls">
         <summary>AI course grouping</summary>
         <form method="post" action="/courses/group" class="compact-form">
-          <input type="hidden" name="course" value="{{ selected_course.code if selected_course else '' }}">
+          <input type="hidden" name="course" value="{{ selected_course.id if selected_course else '' }}">
           <label for="group-provider">Provider</label>
           <select id="group-provider" name="provider">
             {% for provider in ai_providers %}
@@ -92,11 +107,14 @@
       </details>
     </section>
 
-    <section class="panel settings-panel">
-      <h2>Settings</h2>
+    <details class="panel settings-panel" {% if not setup_complete %}open{% endif %}>
+      <summary class="settings-summary">
+        <span>Settings</span>
+        <span class="config-status {{ 'ok' if setup_complete else 'warn' }}">{{ 'Configured' if setup_complete else 'Setup required' }}</span>
+      </summary>
       <div class="settings-columns">
       <form method="post" action="/settings/app" class="app-config-form">
-        <input type="hidden" name="course_code" value="{{ selected_course.code if selected_course else '' }}">
+        <input type="hidden" name="course_code" value="{{ selected_course.id if selected_course else '' }}">
 
         <label for="canvas-base-url">Canvas URL</label>
         <input id="canvas-base-url" name="canvas_base_url" type="url" value="{{ settings.canvas.base_url }}" placeholder="https://canvas.example.edu" required>
@@ -165,7 +183,7 @@
       <div class="api-settings">
       <h3>API keys</h3>
       <form method="post" action="/settings/api-key" class="key-form">
-        <input type="hidden" name="course_code" value="{{ selected_course.code if selected_course else '' }}">
+        <input type="hidden" name="course_code" value="{{ selected_course.id if selected_course else '' }}">
         <label for="key-provider">Provider</label>
         <select id="key-provider" name="provider">
           {% for provider in ai_providers if provider.requires_key %}
@@ -184,7 +202,7 @@
       <div class="tool-status">Whisper command: {{ settings.transcripts.whisper_command }} ({{ 'available' if whisper_available else 'missing' }})</div>
       </div>
       </div>
-    </section>
+    </details>
 
     <section class="panel wide">
       <h2>Lectures{% if selected_course %} - {{ selected_course.code }}{% endif %}</h2>
@@ -222,7 +240,7 @@
           <label><input type="checkbox" name="download_video" checked> Video</label>
           <label><input type="checkbox" name="download_slides"> Slides</label>
           <label><input type="checkbox" name="download_transcript" checked> Transcript</label>
-          <label><input type="checkbox" name="whisper_fallback"> Whisper fallback</label>
+          <label title="Runs locally. The model downloads once when first needed."><input type="checkbox" name="whisper_fallback" {% if settings.transcripts.whisper_enabled %}checked{% endif %}> Local transcript fallback</label>
           <label><input type="checkbox" name="notebooklm" checked> NotebookLM</label>
           <label><input id="ai-notes" type="checkbox" name="ai_notes"> AI notes</label>
           <label class="field-label" for="ai-note-format">Note format</label>
@@ -248,6 +266,10 @@
             {% endfor %}
           </select>
           <button data-job-submit>Run Pipeline</button>
+        </div>
+        <div class="notebooklm-handoff">
+          <a class="button-link" href="https://notebooklm.google.com/" target="_blank" rel="noreferrer">Open NotebookLM</a>
+          <button type="submit" class="secondary-button" formaction="/notebooklm/reveal" formmethod="post" formnovalidate>Show source files</button>
         </div>
         <div class="lecture-folders">
           {% for group in lecture_groups %}

@@ -1,6 +1,6 @@
 [project]
 name = "dental-lecture-manager"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local Canvas/Echo360 dental lecture workflow manager"
 readme = "README.md"
 license = {file = "2026-10-25-LICENSE.md"}
@@ -26,6 +26,8 @@ dependencies = [
   "playwright>=1.45",
   "python-multipart>=0.0.9",
   "imageio-ffmpeg>=0.6",
+  "mlx-whisper>=0.4.3",
+  "mlx>=0.23.2,<0.24",
 ]
 
 [project.urls]

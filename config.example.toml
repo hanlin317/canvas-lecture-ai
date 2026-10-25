@@ -5,7 +5,7 @@ database_path = "local_data/dental_lecture_manager.sqlite3"
 log_path = "local_data/dental_lecture_manager.log"
 
 [canvas]
-base_url = "https://your-university.instructure.com"
+base_url = ""
 state_path = "local_data/playwright_state/canvas_state.json"
 prefer_api = true
 login_browser_channel = "chrome"
@@ -14,7 +14,7 @@ login_timeout_seconds = 300
 
 [paths]
 download_root = "~/Documents"
-notebooklm_staging_dir = "~/Documents/NotebookLM Staging"
+notebooklm_staging_dir = "~/Documents/NotebookLM Sources"
 obsidian_vault = ""
 
 [downloads]
@@ -27,9 +27,9 @@ skip_existing = true
 prefer_official = true
 keep_vtt = true
 include_timestamps = false
-whisper_enabled = false
+whisper_enabled = true
 whisper_command = "mlx_whisper"
-whisper_model = "whisper-large-v3-turbo"
+whisper_model = "mlx-community/whisper-large-v3-turbo-q4"
 
 [ai]
 # The web UI can select any supported provider and model for each pipeline run.

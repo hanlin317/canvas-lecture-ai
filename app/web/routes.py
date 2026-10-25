@@ -26,6 +26,7 @@ from app.models import JobRecord, PipelineOptions
 from app.services.discovery import DiscoveryService, _default_course_group
 from app.services.pipeline import PipelineService
 from app.transcripts.whisper import mlx_whisper_available
+from app.utils import expand_path
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 router = APIRouter()
@@ -96,7 +97,11 @@ async def run_discovery_job(job_id: str, course_code: str, settings: Settings, d
                 db, job_id, message, completed, total
             ),
         )
-        message = f"Discovery finished for {course_code}: {result['recordings']} recording(s)."
+        discovered_course = result.get("course")
+        display_code = discovered_course.code if discovered_course else course_code
+        message = (
+            f"Discovery finished for {display_code}: {result['recordings']} recording(s)."
+        )
         finished_at = utc_now()
         db.update_job(
             job_id,
@@ -130,14 +135,20 @@ def pipeline_summary(lecture_count: int, results: list[dict]) -> str:
         value
         for result in results
         for key, value in result.items()
-        if key in {"video", "slides", "transcript"}
+        if key in {"video", "slides", "transcript", "notebooklm", "ai_notes"}
     ]
-    ready = sum(status in {"complete", "skipped"} for status in stage_statuses)
+    ready = sum(
+        status in {"complete", "skipped"}
+        or (isinstance(status, str) and status not in {"unavailable", "failed"})
+        for status in stage_statuses
+    )
     unavailable = stage_statuses.count("unavailable")
     failed = stage_statuses.count("failed")
+    lecture_errors = sum(bool(result.get("error")) for result in results)
     return (
-        f"Pipeline finished for {lecture_count} lecture(s): "
-        f"{ready} output stage(s) ready, {unavailable} unavailable, {failed} failed."
+        f"Processed {lecture_count} lecture(s): {lecture_count - lecture_errors} completed, "
+        f"{lecture_errors} stopped by errors; {ready} output(s) ready, "
+        f"{unavailable} unavailable, {failed} failed."
     )
 
 
@@ -224,7 +235,7 @@ def selected_course_from_request(courses, request: Request):
     requested = request.query_params.get("course")
     if requested:
         for course in courses:
-            if course.code == requested or str(course.id) == requested or course.canvas_id == requested:
+            if str(course.id) == requested or course.canvas_id == requested or course.code == requested:
                 return course
     return courses[0] if courses else None
 
@@ -275,13 +286,21 @@ def obsidian_vault_status(value: str) -> dict[str, str]:
     return {"kind": "ok", "text": "Vault detected"}
 
 
-def validated_directory(value: str, label: str, *, obsidian: bool = False) -> str:
+def validated_directory(
+    value: str,
+    label: str,
+    *,
+    obsidian: bool = False,
+    create: bool = False,
+) -> str:
     stripped = value.strip()
     if obsidian and not stripped:
         return ""
     if not stripped:
         raise ValueError(f"{label} is required.")
     path = Path(stripped).expanduser().resolve()
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
     if not path.is_dir():
         raise ValueError(f"{label} folder does not exist: {path}")
     if obsidian and not (path / ".obsidian").is_dir():
@@ -336,10 +355,8 @@ async def index(request: Request, settings: Settings = Depends(get_settings), db
     if lectures_by_topic.get(None):
         lecture_groups.append({"topic": None, "lectures": lectures_by_topic[None]})
     canvas = CanvasClient(settings)
-    if not canvas.has_session():
-        canvas_session_status = "not saved"
-    else:
-        canvas_session_status = "valid" if await canvas.session_is_valid() else "expired"
+    canvas_session_status = "saved" if canvas.has_session() else "not saved"
+    setup_complete = bool(settings.canvas.base_url and Path(settings.paths.download_root).expanduser().is_dir())
     ai_providers = []
     for spec in AI_PROVIDER_SPECS:
         models, refreshed_at = provider_models_for_display(spec.name, db)
@@ -390,6 +407,7 @@ async def index(request: Request, settings: Settings = Depends(get_settings), db
             "recent_processing": recent_processing,
             "processing_groups": processing_groups,
             "canvas_session_status": canvas_session_status,
+            "setup_complete": setup_complete,
             "ai_providers": ai_providers,
             "ai_provider_models": {
                 provider["name"]: provider["models"] for provider in ai_providers
@@ -460,9 +478,11 @@ async def update_app_settings(
         save_web_settings(
             {
                 "canvas.base_url": validated_canvas_url(canvas_base_url),
-                "paths.download_root": validated_directory(download_root, "Download folder"),
+                "paths.download_root": validated_directory(
+                    download_root, "Download folder", create=True
+                ),
                 "paths.notebooklm_staging_dir": validated_directory(
-                    notebooklm_staging_dir, "NotebookLM staging folder"
+                    notebooklm_staging_dir, "NotebookLM sources folder", create=True
                 ),
                 "paths.obsidian_vault": validated_directory(
                     obsidian_vault, "Obsidian vault", obsidian=True
@@ -470,7 +490,9 @@ async def update_app_settings(
                 "ai.provider": provider.name,
                 "ai.model": model,
                 "transcripts.whisper_enabled": whisper_enabled,
-                "transcripts.whisper_model": whisper or "whisper-large-v3-turbo",
+                "transcripts.whisper_model": (
+                    whisper or "mlx-community/whisper-large-v3-turbo-q4"
+                ),
             }
         )
     except Exception as exc:
@@ -525,6 +547,24 @@ async def choose_settings_folder(field: str = Form(default="")) -> JSONResponse:
     return JSONResponse({"path": selected, "cancelled": selected is None})
 
 
+@router.post("/notebooklm/reveal")
+async def reveal_notebooklm_sources(
+    course_code: str = Form(default=""),
+    settings: Settings = Depends(get_settings),
+) -> RedirectResponse:
+    path = expand_path(settings.paths.notebooklm_staging_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    if sys.platform != "darwin":
+        return redirect_home(
+            error="Showing the NotebookLM sources folder is currently available on macOS only.",
+            course=course_code,
+        )
+    process = await asyncio.create_subprocess_exec("open", str(path))
+    if await process.wait() != 0:
+        return redirect_home(error="Could not open the NotebookLM sources folder.", course=course_code)
+    return redirect_home(message="Opened the NotebookLM sources folder.", course=course_code)
+
+
 @router.post("/courses/sync")
 async def sync_courses(settings: Settings = Depends(get_settings), db: Database = Depends(get_db)) -> RedirectResponse:
     try:
@@ -534,7 +574,7 @@ async def sync_courses(settings: Settings = Depends(get_settings), db: Database 
         return redirect_home(error=str(exc))
     params = {"message": f"Synced {len(courses)} Canvas course(s)."}
     if courses:
-        params["course"] = courses[0].code
+        params["course"] = str(courses[0].id)
     return redirect_home(**params)
 
 

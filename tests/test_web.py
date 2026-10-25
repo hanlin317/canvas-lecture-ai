@@ -48,6 +48,25 @@ def test_index_page_renders(tmp_path, monkeypatch) -> None:
     assert "DeepSeek V4.1 Flash" in response.text
     assert "Refresh models" in response.text
     assert "Not configured" in response.text
+    assert "Open NotebookLM" in response.text
+    assert "Show source files" in response.text
+    assert "Configured" in response.text
+
+
+def test_first_run_requires_canvas_setup_before_login(tmp_path, monkeypatch) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f"[app]\ndatabase_path = '{tmp_path / 'test.sqlite3'}'\n"
+        "[canvas]\nbase_url = ''\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DLM_CONFIG", str(config))
+
+    response = TestClient(create_app()).get("/")
+
+    assert response.status_code == 200
+    assert "Setup required" in response.text
+    assert '<form method="post" action="/login"><button disabled>' in response.text
 
 
 def test_app_settings_route_saves_validated_configuration(tmp_path, monkeypatch) -> None:
@@ -92,6 +111,91 @@ def test_app_settings_route_saves_validated_configuration(tmp_path, monkeypatch)
     assert settings.transcripts.whisper_enabled is True
     assert "# retained" in config.read_text(encoding="utf-8")
     assert settings.downloads.concurrency == 5
+
+
+def test_app_settings_route_creates_output_folders(tmp_path, monkeypatch) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f"[app]\ndatabase_path = '{tmp_path / 'test.sqlite3'}'\n"
+        "[canvas]\nbase_url = 'https://canvas.example'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DLM_CONFIG", str(config))
+    download = tmp_path / "new" / "downloads"
+    notebook = tmp_path / "new" / "notebooklm"
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/settings/app",
+        data={
+            "canvas_base_url": "https://canvas.example",
+            "download_root": str(download),
+            "notebooklm_staging_dir": str(notebook),
+            "obsidian_vault": "",
+            "ai_provider": "openai",
+            "ai_model": "gpt-6.1-sol",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert download.is_dir()
+    assert notebook.is_dir()
+
+
+def test_pipeline_summary_includes_generated_outputs_and_lecture_errors() -> None:
+    summary = web_routes.pipeline_summary(
+        2,
+        [
+            {
+                "lecture": "One",
+                "transcript": "complete",
+                "notebooklm": "/tmp/one.md",
+                "ai_notes": "/tmp/one.pdf",
+            },
+            {"lecture": "Two", "error": "provider failed"},
+        ],
+    )
+
+    assert summary == (
+        "Processed 2 lecture(s): 1 completed, 1 stopped by errors; "
+        "3 output(s) ready, 0 unavailable, 0 failed."
+    )
+
+
+@pytest.mark.asyncio
+async def test_reveal_notebooklm_sources_opens_configured_folder(tmp_path, monkeypatch) -> None:
+    sources = tmp_path / "NotebookLM Sources"
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f"[app]\ndatabase_path = '{tmp_path / 'test.sqlite3'}'\n"
+        f"[paths]\nnotebooklm_staging_dir = '{sources}'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DLM_CONFIG", str(config))
+    calls = []
+
+    class FakeProcess:
+        async def wait(self):
+            return 0
+
+    async def fake_subprocess(*args):
+        calls.append(args)
+        return FakeProcess()
+
+    monkeypatch.setattr(web_routes.sys, "platform", "darwin")
+    monkeypatch.setattr(web_routes.asyncio, "create_subprocess_exec", fake_subprocess)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/notebooklm/reveal",
+        data={"course_code": "DENT1000"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert sources.is_dir()
+    assert calls == [("open", str(sources))]
 
 
 def test_app_settings_route_rejects_non_vault_folder(tmp_path, monkeypatch) -> None:
@@ -417,6 +521,40 @@ def test_index_shows_selected_course_lectures(tmp_path, monkeypatch) -> None:
     assert "02/04/2026" in response.text
     assert "2026-04-02T17:00:00.000" not in response.text
     assert "Lectures - FIRST" not in response.text
+
+
+def test_course_selector_distinguishes_duplicate_course_codes(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "test.sqlite3"
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f"[app]\ndatabase_path = '{db_path}'\n"
+        "[canvas]\nbase_url = 'https://canvas.example'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DLM_CONFIG", str(config))
+    db = Database(db_path)
+    older = db.upsert_course(
+        Course(canvas_id="2025", code="DENT1000", name="Dentistry 2025")
+    )
+    newer = db.upsert_course(
+        Course(canvas_id="2026", code="DENT1000", name="Dentistry 2026")
+    )
+    topic = db.upsert_topic(Topic(course_id=newer.id or 0, name="New lectures"))
+    db.upsert_lecture(
+        Lecture(
+            source_id="new-lecture",
+            course_id=newer.id or 0,
+            topic_id=topic.id,
+            original_title="Only in 2026",
+        )
+    )
+
+    response = TestClient(create_app()).get(f"/?course={newer.id}")
+
+    assert response.status_code == 200
+    assert "Only in 2026" in response.text
+    assert f'<option value="{older.id}"' in response.text
+    assert f'<option value="{newer.id}"' in response.text
 
 
 def test_recent_pipeline_output_is_visible_and_downloadable(tmp_path, monkeypatch) -> None:

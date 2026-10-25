@@ -23,7 +23,7 @@ class DiscoveryService:
         self.echo = Echo360Client(settings)
 
     async def sync_canvas_courses(self) -> list[Course]:
-        canvas_courses = await self.canvas.list_courses(active_only=True)
+        canvas_courses = await self.canvas.list_courses(active_only=False)
         self.db.mark_all_courses_inactive()
         courses = []
         for item in canvas_courses:
@@ -80,10 +80,10 @@ class DiscoveryService:
                 progress(message, completed, total_steps)
 
         report("Locating the selected Canvas course", 0)
-        course = self.db.get_course_by_code(course_code)
+        course = self.db.get_course(course_code)
         if not course:
             await self.sync_canvas_courses()
-            course = self.db.get_course_by_code(course_code)
+            course = self.db.get_course(course_code)
         if not course:
             raise ValueError(f"Course not found: {course_code}")
         report("Loading Canvas modules", 1)
@@ -97,7 +97,7 @@ class DiscoveryService:
         if echo_links:
             recordings = await self.echo.discover_course(
                 echo_links[0],
-                diagnostic_output=diagnostic_dir / f"{course_code}_echo360.json",
+                diagnostic_output=diagnostic_dir / f"{course.code}_echo360.json",
             )
         report("Saving lecture folders", 4)
         topics: dict[str, Topic] = {}

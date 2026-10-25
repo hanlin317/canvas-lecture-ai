@@ -222,6 +222,21 @@ class Database:
             row = conn.execute("SELECT * FROM courses WHERE code = ?", (code,)).fetchone()
             return Course(**dict(row)) if row else None
 
+    def get_course(self, identifier: str | int) -> Course | None:
+        value = str(identifier)
+        with self.connect() as conn:
+            if value.isdigit():
+                row = conn.execute("SELECT * FROM courses WHERE id = ?", (int(value),)).fetchone()
+                if row:
+                    return Course(**dict(row))
+            row = conn.execute("SELECT * FROM courses WHERE canvas_id = ?", (value,)).fetchone()
+            if not row:
+                row = conn.execute(
+                    "SELECT * FROM courses WHERE code = ? ORDER BY is_active DESC, id DESC",
+                    (value,),
+                ).fetchone()
+            return Course(**dict(row)) if row else None
+
     def upsert_topic(self, topic: Topic) -> Topic:
         with self.connect() as conn:
             conn.execute(

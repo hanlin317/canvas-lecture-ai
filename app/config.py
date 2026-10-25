@@ -34,7 +34,7 @@ class CanvasConfig(BaseModel):
 
 class PathsConfig(BaseModel):
     download_root: str = "~/Documents"
-    notebooklm_staging_dir: str = "~/Documents/NotebookLM Staging"
+    notebooklm_staging_dir: str = "~/Documents/NotebookLM Sources"
     obsidian_vault: str = ""
 
 
@@ -49,9 +49,9 @@ class TranscriptsConfig(BaseModel):
     prefer_official: bool = True
     keep_vtt: bool = True
     include_timestamps: bool = False
-    whisper_enabled: bool = False
+    whisper_enabled: bool = True
     whisper_command: str = "mlx_whisper"
-    whisper_model: str = "whisper-large-v3-turbo"
+    whisper_model: str = "mlx-community/whisper-large-v3-turbo-q4"
 
 
 class AIConfig(BaseModel):
@@ -126,6 +126,7 @@ def prepare_runtime_environment() -> Path | None:
     os.environ.setdefault(
         "PLAYWRIGHT_BROWSERS_PATH", str(bundled_resource("playwright-browsers"))
     )
+    os.environ.setdefault("HF_HOME", str(data_dir / "models" / "huggingface"))
 
     config_path = settings_path()
     if not config_path.exists():
