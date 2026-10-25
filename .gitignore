@@ -18,7 +18,7 @@ browser_state/
 /downloads/
 outputs/*
 !outputs/.gitkeep
-dental_lecture_manager.egg-info/
+*.egg-info/
 build/
 dist/
 *.dmg

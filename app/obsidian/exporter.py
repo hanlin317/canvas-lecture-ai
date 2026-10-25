@@ -1,12 +1,35 @@
 from __future__ import annotations
 
 import io
-import re
-import textwrap
-import zipfile
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from html import escape
 from pathlib import Path
+
+from docx import Document
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Inches, Pt, RGBColor
+from markdown_it import MarkdownIt
+from markdown_it.tree import SyntaxTreeNode
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import (
+    ListFlowable,
+    ListItem,
+    LongTable,
+    Paragraph,
+    Preformatted,
+    SimpleDocTemplate,
+    Spacer,
+    TableStyle,
+)
 
 from app.models import LectureContext
 from app.utils import lecture_stem, safe_filename, sha256_text
@@ -44,7 +67,9 @@ generated_at: "{datetime.now(UTC).isoformat()}"
 """
 
 
-def save_obsidian_note(markdown: str, destination_dir: Path, context: LectureContext, overwrite: bool = False) -> Path:
+def save_obsidian_note(
+    markdown: str, destination_dir: Path, context: LectureContext, overwrite: bool = False
+) -> Path:
     destination_dir.mkdir(parents=True, exist_ok=True)
     path = destination_dir / f"{safe_filename(context.title)}.md"
     if path.exists() and not overwrite:
@@ -76,9 +101,9 @@ def export_ai_note(
     if note_format == "markdown":
         payload = markdown.encode("utf-8")
     elif note_format == "docx":
-        payload = _docx_bytes(markdown, context.title)
+        payload = _docx_bytes(markdown, context)
     else:
-        payload = _pdf_bytes(markdown)
+        payload = _pdf_bytes(markdown, context)
     tmp = path.with_suffix(path.suffix + ".part")
     tmp.write_bytes(payload)
     tmp.replace(path)
@@ -92,168 +117,404 @@ def _note_body(markdown: str) -> str:
     return markdown[end + 5 :].strip() if end >= 0 else markdown.strip()
 
 
-def _plain_inline(text: str) -> str:
-    text = re.sub(r"!\[([^]]*)\]\([^)]+\)", r"\1", text)
-    text = re.sub(r"\[([^]]+)\]\(([^)]+)\)", r"\1 (\2)", text)
-    text = re.sub(r"(`{1,3}|\*\*|__|\*|_)", "", text)
-    return text.strip()
+@dataclass(frozen=True)
+class InlineSpan:
+    text: str
+    bold: bool = False
+    italic: bool = False
+    code: bool = False
+    href: str | None = None
 
 
-def _docx_paragraph(text: str, style: str | None = None) -> str:
-    style_xml = f'<w:pStyle w:val="{style}"/>' if style else ""
-    paragraph_properties = f"<w:pPr>{style_xml}</w:pPr>" if style_xml else ""
-    parts = re.split(r"(\*\*.*?\*\*)", text)
-    runs = []
-    for part in parts:
-        if not part:
-            continue
-        bold = part.startswith("**") and part.endswith("**")
-        value = _plain_inline(part[2:-2] if bold else part)
-        if not value:
-            continue
-        properties = "<w:rPr><w:b/></w:rPr>" if bold else ""
-        runs.append(
-            f'<w:r>{properties}<w:t xml:space="preserve">{escape(value)}</w:t></w:r>'
-        )
-    return f"<w:p>{paragraph_properties}{''.join(runs)}</w:p>"
+def _markdown_tree(markdown: str) -> SyntaxTreeNode:
+    parser = MarkdownIt("commonmark", {"html": False}).enable("table")
+    return SyntaxTreeNode(parser.parse(_note_body(markdown)))
 
 
-def _docx_bytes(markdown: str, title: str) -> bytes:
-    paragraphs = []
-    for raw_line in _note_body(markdown).splitlines():
-        line = raw_line.strip()
-        if not line:
-            paragraphs.append("<w:p/>")
-            continue
-        heading = re.match(r"^(#{1,3})\s+(.+)$", line)
-        if heading:
-            paragraphs.append(_docx_paragraph(heading.group(2), f"Heading{len(heading.group(1))}"))
-            continue
-        if re.match(r"^[-*]\s+", line):
-            line = "• " + re.sub(r"^[-*]\s+", "", line)
-        paragraphs.append(_docx_paragraph(line))
+def _inline_spans(
+    node: SyntaxTreeNode,
+    *,
+    bold: bool = False,
+    italic: bool = False,
+    code: bool = False,
+    href: str | None = None,
+) -> list[InlineSpan]:
+    node_type = node.type
+    bold = bold or node_type == "strong"
+    italic = italic or node_type == "em"
+    code = code or node_type == "code_inline"
+    href = str(node.attrs.get("href")) if node_type == "link" else href
+    if node_type in {"text", "code_inline"}:
+        return [InlineSpan(node.content, bold, italic, code, href)]
+    if node_type in {"softbreak", "hardbreak"}:
+        return [InlineSpan("\n", bold, italic, code, href)]
+    if node_type == "image":
+        return [InlineSpan(f"[{node.content or 'Image'}]", bold, italic, code, href)]
+    spans: list[InlineSpan] = []
+    for child in node.children:
+        spans.extend(_inline_spans(child, bold=bold, italic=italic, code=code, href=href))
+    return spans
 
-    document = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-  <w:body>{''.join(paragraphs)}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134"/></w:sectPr></w:body>
-</w:document>'''
-    styles = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-  <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:rPr><w:sz w:val="22"/></w:rPr></w:style>
-  <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:rPr><w:b/><w:sz w:val="36"/></w:rPr></w:style>
-  <w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:rPr><w:b/><w:sz w:val="28"/></w:rPr></w:style>
-  <w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:rPr><w:b/><w:sz w:val="24"/></w:rPr></w:style>
-</w:styles>'''
-    content_types = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
-  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
-  <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
-</Types>'''
-    root_rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
-</Relationships>'''
-    document_rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
-</Relationships>'''
-    generated = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    core = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <dc:title>{escape(title)}</dc:title><dc:creator>Dental Lecture Manager</dc:creator><dcterms:created xsi:type="dcterms:W3CDTF">{generated}</dcterms:created>
-</cp:coreProperties>'''
+
+def _first_inline(node: SyntaxTreeNode) -> list[InlineSpan]:
+    inline = next((child for child in node.children if child.type == "inline"), None)
+    return _inline_spans(inline) if inline else []
+
+
+def _add_docx_spans(paragraph, spans: list[InlineSpan]) -> None:
+    for span in spans:
+        text = f"{span.text} ({span.href})" if span.href else span.text
+        run = paragraph.add_run(text)
+        run.bold = span.bold
+        run.italic = span.italic
+        if span.code:
+            run.font.name = "Menlo"
+            run.font.size = Pt(9)
+            run.font.color.rgb = RGBColor(36, 56, 70)
+
+
+def _shade_docx(element, fill: str) -> None:
+    properties = (
+        element._tc.get_or_add_tcPr() if hasattr(element, "_tc") else element._p.get_or_add_pPr()
+    )
+    shading = OxmlElement("w:shd")
+    shading.set(qn("w:fill"), fill)
+    properties.append(shading)
+
+
+def _repeat_docx_header(row) -> None:
+    properties = row._tr.get_or_add_trPr()
+    repeat = OxmlElement("w:tblHeader")
+    repeat.set(qn("w:val"), "true")
+    properties.append(repeat)
+
+
+def _render_docx_list(document: Document, node: SyntaxTreeNode, level: int = 0) -> None:
+    style = "List Number" if node.type == "ordered_list" else "List Bullet"
+    for item in (child for child in node.children if child.type == "list_item"):
+        for child in item.children:
+            if child.type == "paragraph":
+                paragraph = document.add_paragraph(style=style)
+                paragraph.paragraph_format.left_indent = Inches(0.2 * level)
+                _add_docx_spans(paragraph, _first_inline(child))
+            elif child.type in {"bullet_list", "ordered_list"}:
+                _render_docx_list(document, child, level + 1)
+            else:
+                _render_docx_node(document, child)
+
+
+def _render_docx_table(document: Document, node: SyntaxTreeNode) -> None:
+    rows = [row for section in node.children for row in section.children if row.type == "tr"]
+    if not rows:
+        return
+    table = document.add_table(rows=len(rows), cols=max(len(row.children) for row in rows))
+    table.style = "Table Grid"
+    table.autofit = True
+    for row_index, source_row in enumerate(rows):
+        for column_index, source_cell in enumerate(source_row.children):
+            cell = table.cell(row_index, column_index)
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+            _add_docx_spans(cell.paragraphs[0], _first_inline(source_cell))
+            if row_index == 0:
+                _shade_docx(cell, "DCE6F1")
+                for run in cell.paragraphs[0].runs:
+                    run.bold = True
+        if row_index == 0:
+            _repeat_docx_header(table.rows[0])
+
+
+def _render_docx_node(document: Document, node: SyntaxTreeNode) -> None:
+    if node.type == "heading":
+        paragraph = document.add_heading(level=min(3, max(1, int(node.tag[1:]))))
+        _add_docx_spans(paragraph, _first_inline(node))
+    elif node.type == "paragraph":
+        paragraph = document.add_paragraph()
+        _add_docx_spans(paragraph, _first_inline(node))
+    elif node.type in {"bullet_list", "ordered_list"}:
+        _render_docx_list(document, node)
+    elif node.type == "table":
+        _render_docx_table(document, node)
+        document.add_paragraph()
+    elif node.type == "blockquote":
+        for child in node.children:
+            paragraph = document.add_paragraph()
+            paragraph.paragraph_format.left_indent = Inches(0.3)
+            paragraph.paragraph_format.right_indent = Inches(0.2)
+            _add_docx_spans(paragraph, _first_inline(child))
+            _shade_docx(paragraph, "EEF3F7")
+    elif node.type in {"fence", "code_block"}:
+        paragraph = document.add_paragraph()
+        paragraph.paragraph_format.left_indent = Inches(0.2)
+        run = paragraph.add_run(node.content.rstrip())
+        run.font.name = "Menlo"
+        run.font.size = Pt(8.5)
+        _shade_docx(paragraph, "F1F4F6")
+    else:
+        for child in node.children:
+            _render_docx_node(document, child)
+
+
+def _add_docx_page_number(paragraph) -> None:
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    run = paragraph.add_run("Page ")
+    begin = OxmlElement("w:fldChar")
+    begin.set(qn("w:fldCharType"), "begin")
+    instruction = OxmlElement("w:instrText")
+    instruction.set(qn("xml:space"), "preserve")
+    instruction.text = "PAGE"
+    end = OxmlElement("w:fldChar")
+    end.set(qn("w:fldCharType"), "end")
+    run._r.extend([begin, instruction, end])
+
+
+def _docx_bytes(markdown: str, context: LectureContext) -> bytes:
+    document = Document()
+    section = document.sections[0]
+    section.top_margin = Inches(0.65)
+    section.bottom_margin = Inches(0.65)
+    section.left_margin = Inches(0.7)
+    section.right_margin = Inches(0.7)
+    normal = document.styles["Normal"]
+    normal.font.name = "Aptos"
+    normal.font.size = Pt(10.5)
+    normal.paragraph_format.space_after = Pt(5)
+    for level, size, color in ((1, 20, "113F67"), (2, 15, "0B6E4F"), (3, 12, "365469")):
+        style = document.styles[f"Heading {level}"]
+        style.font.name = "Aptos Display"
+        style.font.size = Pt(size)
+        style.font.color.rgb = RGBColor.from_string(color)
+        style.paragraph_format.keep_with_next = True
+        style.paragraph_format.space_before = Pt(12 if level > 1 else 0)
+        style.paragraph_format.space_after = Pt(6)
+    header = section.header.paragraphs[0]
+    header.text = f"Canvas Lecture AI  |  {context.course_code}  |  {context.topic_name}"
+    header.style = document.styles["Caption"]
+    _add_docx_page_number(section.footer.paragraphs[0])
+    document.core_properties.title = context.title
+    document.core_properties.subject = f"{context.course_code} - {context.topic_name}"
+    document.core_properties.author = "Canvas Lecture AI"
+    for node in _markdown_tree(markdown).children:
+        _render_docx_node(document, node)
     output = io.BytesIO()
-    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("[Content_Types].xml", content_types)
-        archive.writestr("_rels/.rels", root_rels)
-        archive.writestr("word/document.xml", document)
-        archive.writestr("word/styles.xml", styles)
-        archive.writestr("word/_rels/document.xml.rels", document_rels)
-        archive.writestr("docProps/core.xml", core)
+    document.save(output)
     return output.getvalue()
 
 
-def _pdf_text(value: str) -> str:
-    value = _plain_inline(value)
-    value = value.replace("•", "-").replace("–", "-").replace("—", "-")
-    return value.encode("ascii", "replace").decode("ascii").replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+def _register_pdf_fonts() -> tuple[str, str, str, str]:
+    try:
+        import reportlab
+
+        font_dir = Path(reportlab.__file__).parent / "fonts"
+        font_files = (
+            ("CanvasSans", "Vera.ttf"),
+            ("CanvasSans-Bold", "VeraBd.ttf"),
+            ("CanvasSans-Italic", "VeraIt.ttf"),
+        )
+        for name, filename in font_files:
+            if name not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont(name, str(font_dir / filename)))
+        return "CanvasSans", "CanvasSans-Bold", "CanvasSans-Italic", "Courier"
+    except (OSError, ValueError):
+        return "Helvetica", "Helvetica-Bold", "Helvetica-Oblique", "Courier"
 
 
-def _pdf_bytes(markdown: str) -> bytes:
-    lines: list[tuple[str, str, int, int]] = []
-    for raw_line in _note_body(markdown).splitlines():
-        line = raw_line.strip()
-        if not line:
-            lines.append(("", "regular", 10, 0))
-            continue
-        heading = re.match(r"^(#{1,3})\s+(.+)$", line)
-        if heading:
-            size = {1: 18, 2: 14, 3: 12}[len(heading.group(1))]
-            lines.append((heading.group(2), "bold", size, 0))
-            continue
-        indent = 14 if re.match(r"^[-*]\s+", line) else 0
-        if indent:
-            line = "- " + re.sub(r"^[-*]\s+", "", line)
-        lines.append((line, "regular", 10, indent))
+def _pdf_inline(spans: list[InlineSpan], fonts: tuple[str, str, str, str]) -> str:
+    output: list[str] = []
+    for span in spans:
+        value = escape(span.text).replace("\n", "<br/>")
+        font = fonts[3] if span.code else fonts[0]
+        font = fonts[1] if span.bold else fonts[2] if span.italic else font
+        value = f'<font name="{font}">{value}</font>'
+        if span.href:
+            value = f'<link href="{escape(span.href)}" color="#0B6E4F">{value}</link>'
+        output.append(value)
+    return "".join(output)
 
-    pages: list[list[tuple[str, str, int, int, float]]] = [[]]
-    y = 788.0
-    for text, font, size, indent in lines:
-        width = max(35, int((487 - indent) / (size * 0.52)))
-        wrapped = textwrap.wrap(_pdf_text(text), width=width, break_long_words=False) or [""]
-        leading = size * 1.35
-        for value in wrapped:
-            if y - leading < 54:
-                pages.append([])
-                y = 788.0
-            pages[-1].append((value, font, size, indent, y))
-            y -= leading
-        y -= 4 if font == "bold" else 1
 
-    objects: dict[int, bytes] = {
-        1: b"<< /Type /Catalog /Pages 2 0 R >>",
-        3: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
-        4: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>",
+def _pdf_styles(fonts: tuple[str, str, str, str]) -> dict[str, ParagraphStyle]:
+    sample = getSampleStyleSheet()
+    body = ParagraphStyle(
+        "CanvasBody",
+        parent=sample["BodyText"],
+        fontName=fonts[0],
+        fontSize=9.5,
+        leading=13,
+        textColor=colors.HexColor("#1F2933"),
+        spaceAfter=5,
+    )
+    return {
+        "body": body,
+        "h1": ParagraphStyle(
+            "CanvasH1",
+            parent=sample["Heading1"],
+            fontName=fonts[1],
+            fontSize=20,
+            leading=24,
+            textColor=colors.HexColor("#113F67"),
+            spaceAfter=10,
+        ),
+        "h2": ParagraphStyle(
+            "CanvasH2",
+            parent=sample["Heading2"],
+            fontName=fonts[1],
+            fontSize=14,
+            leading=18,
+            textColor=colors.HexColor("#0B6E4F"),
+            spaceBefore=10,
+            spaceAfter=5,
+            keepWithNext=True,
+        ),
+        "h3": ParagraphStyle(
+            "CanvasH3",
+            parent=sample["Heading3"],
+            fontName=fonts[1],
+            fontSize=11,
+            leading=14,
+            textColor=colors.HexColor("#365469"),
+            spaceBefore=8,
+            spaceAfter=4,
+            keepWithNext=True,
+        ),
+        "quote": ParagraphStyle(
+            "CanvasQuote",
+            parent=body,
+            leftIndent=10,
+            rightIndent=8,
+            borderColor=colors.HexColor("#7EA4BF"),
+            borderWidth=1,
+            borderPadding=6,
+            backColor=colors.HexColor("#EEF3F7"),
+        ),
+        "code": ParagraphStyle(
+            "CanvasCode",
+            parent=sample["Code"],
+            fontName=fonts[3],
+            fontSize=7.8,
+            leading=10,
+            leftIndent=8,
+            borderPadding=6,
+            backColor=colors.HexColor("#F1F4F6"),
+        ),
+        "table": ParagraphStyle(
+            "CanvasTable", parent=body, fontSize=7.5, leading=9.5, spaceAfter=0
+        ),
+        "table_header": ParagraphStyle(
+            "CanvasTableHeader",
+            parent=body,
+            fontName=fonts[1],
+            fontSize=7.5,
+            leading=9.5,
+            textColor=colors.HexColor("#113F67"),
+            spaceAfter=0,
+        ),
     }
-    page_ids = []
-    for index, page in enumerate(pages):
-        page_id = 5 + index * 2
-        content_id = page_id + 1
-        page_ids.append(page_id)
-        commands = []
-        for value, font, size, indent, y_position in page:
-            font_ref = "F2" if font == "bold" else "F1"
-            commands.append(
-                f"BT /{font_ref} {size} Tf 1 0 0 1 {54 + indent} {y_position:.1f} Tm ({value}) Tj ET"
-            )
-        stream = "\n".join(commands).encode("ascii")
-        objects[page_id] = (
-            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] "
-            f"/Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents {content_id} 0 R >>"
-        ).encode("ascii")
-        objects[content_id] = b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream"
-    kids = " ".join(f"{page_id} 0 R" for page_id in page_ids)
-    objects[2] = f"<< /Type /Pages /Kids [{kids}] /Count {len(page_ids)} >>".encode("ascii")
 
-    output = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
-    offsets = [0]
-    for object_id in range(1, max(objects) + 1):
-        offsets.append(len(output))
-        output.extend(f"{object_id} 0 obj\n".encode("ascii"))
-        output.extend(objects[object_id])
-        output.extend(b"\nendobj\n")
-    xref = len(output)
-    output.extend(f"xref\n0 {len(offsets)}\n".encode("ascii"))
-    output.extend(b"0000000000 65535 f \n")
-    for offset in offsets[1:]:
-        output.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
-    output.extend(
-        f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode(
-            "ascii"
+
+def _pdf_list(node: SyntaxTreeNode, styles, fonts, level: int = 0):
+    items = []
+    for item in (child for child in node.children if child.type == "list_item"):
+        flows = []
+        for child in item.children:
+            if child.type == "paragraph":
+                flows.append(Paragraph(_pdf_inline(_first_inline(child), fonts), styles["body"]))
+            elif child.type in {"bullet_list", "ordered_list"}:
+                flows.append(_pdf_list(child, styles, fonts, level + 1))
+            else:
+                flows.extend(_pdf_node(child, styles, fonts))
+        items.append(ListItem(flows or [Spacer(1, 1)], leftIndent=8 + level * 4))
+    return ListFlowable(
+        items,
+        bulletType="1" if node.type == "ordered_list" else "bullet",
+        leftIndent=18 + level * 6,
+        bulletFontName=fonts[0],
+        bulletFontSize=8,
+        spaceAfter=5,
+    )
+
+
+def _pdf_table(node: SyntaxTreeNode, styles, fonts):
+    rows = [row for section in node.children for row in section.children if row.type == "tr"]
+    data = []
+    for row_index, row in enumerate(rows):
+        style = styles["table_header"] if row_index == 0 else styles["table"]
+        data.append(
+            [Paragraph(_pdf_inline(_first_inline(cell), fonts), style) for cell in row.children]
+        )
+    if not data:
+        return Spacer(1, 1)
+    columns = max(len(row) for row in data)
+    usable_width = A4[0] - 32 * mm
+    table = LongTable(
+        data, colWidths=[usable_width / columns] * columns, repeatRows=1, splitByRow=1
+    )
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#DCE6F1")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#B8C5D1")),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F6F8FA")]),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
         )
     )
-    return bytes(output)
+    return table
+
+
+def _pdf_node(node: SyntaxTreeNode, styles, fonts) -> list:
+    if node.type == "heading":
+        level = min(3, max(1, int(node.tag[1:])))
+        return [Paragraph(_pdf_inline(_first_inline(node), fonts), styles[f"h{level}"])]
+    if node.type == "paragraph":
+        return [Paragraph(_pdf_inline(_first_inline(node), fonts), styles["body"])]
+    if node.type in {"bullet_list", "ordered_list"}:
+        return [_pdf_list(node, styles, fonts)]
+    if node.type == "table":
+        return [_pdf_table(node, styles, fonts), Spacer(1, 5)]
+    if node.type == "blockquote":
+        spans = [span for child in node.children for span in _first_inline(child)]
+        return [Paragraph(_pdf_inline(spans, fonts), styles["quote"])]
+    if node.type in {"fence", "code_block"}:
+        return [Preformatted(node.content.rstrip(), styles["code"])]
+    flows = []
+    for child in node.children:
+        flows.extend(_pdf_node(child, styles, fonts))
+    return flows
+
+
+def _pdf_bytes(markdown: str, context: LectureContext) -> bytes:
+    output = io.BytesIO()
+    fonts = _register_pdf_fonts()
+    styles = _pdf_styles(fonts)
+    document = SimpleDocTemplate(
+        output,
+        pagesize=A4,
+        rightMargin=16 * mm,
+        leftMargin=16 * mm,
+        topMargin=18 * mm,
+        bottomMargin=17 * mm,
+        title=context.title,
+        author="Canvas Lecture AI",
+        subject=f"{context.course_code} - {context.topic_name}",
+    )
+
+    def page(canvas, doc) -> None:
+        canvas.saveState()
+        canvas.setFont(fonts[0], 7.5)
+        canvas.setFillColor(colors.HexColor("#526574"))
+        canvas.drawString(16 * mm, A4[1] - 10 * mm, f"Canvas Lecture AI  |  {context.course_code}")
+        canvas.drawRightString(A4[0] - 16 * mm, 9 * mm, f"Page {doc.page}")
+        canvas.restoreState()
+
+    story = [
+        flow
+        for node in _markdown_tree(markdown).children
+        for flow in _pdf_node(node, styles, fonts)
+    ]
+    if not story:
+        story = [Paragraph("No note content was generated.", styles["body"])]
+    document.build(story, onFirstPage=page, onLaterPages=page)
+    return output.getvalue()

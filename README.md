@@ -1,9 +1,11 @@
-# Dental Lecture Manager
+# Canvas Lecture AI
 
-Dental Lecture Manager is a local macOS application for organizing an
-authenticated Canvas and Echo360 lecture workflow. It discovers recordings by
-their Echo360 folder, downloads available media and slides, cleans transcripts,
-and prepares study material for NotebookLM or Obsidian.
+**Lecture Downloader & AI Notes Generator**
+
+Canvas Lecture AI is a local macOS application for organizing an authenticated
+Canvas and Echo360 lecture workflow. It discovers recordings by their Echo360
+folder, downloads available media and slides, cleans transcripts, and prepares
+study material for NotebookLM or Obsidian.
 
 The application runs only on your Mac and opens its interface at
 `http://127.0.0.1:8017`.
@@ -13,6 +15,10 @@ The application runs only on your Mac and opens its interface at
 > authorized to access. Follow your institution's policies and the copyright
 > terms applying to lecture content. Do not redistribute downloaded material
 > without permission.
+
+Canvas Lecture AI is an independent, unofficial project. It is not affiliated
+with or endorsed by Instructure, Echo360, the University of Sydney, or any AI
+provider.
 
 ## Features
 
@@ -25,7 +31,8 @@ The application runs only on your Mac and opens its interface at
 - Clean canonical transcripts and deterministic NotebookLM Markdown sources
 - AI study notes through OpenAI, Anthropic, Gemini, OpenRouter, xAI, DeepSeek,
   Mistral, or a local OpenAI-compatible service
-- Markdown, PDF, and Word note exports, including into an Obsidian vault
+- Configurable AI note length and per-run note instructions
+- Styled Markdown, PDF, and Word exports with headings, lists, and tables
 - Obsidian notes and attachments using lecture-title filenames
 - Background jobs with progress, ETA, lecture position, cancellation, and
   collapsible processing history
@@ -34,10 +41,10 @@ The application runs only on your Mac and opens its interface at
 ## Download
 
 Download the latest Apple Silicon DMG from
-[GitHub Releases](https://github.com/hanlin317/dental-lecture-manager/releases).
+[GitHub Releases](https://github.com/hanlin317/canvas-lecture-ai/releases).
 
 1. Open the DMG.
-2. Drag **Dental Lecture Manager** into **Applications**.
+2. Drag **Canvas Lecture AI** into **Applications**.
 3. Open the app. Its local website opens in your default browser.
 
 The current release is ad-hoc signed but not Apple-notarized. On first launch,
@@ -56,6 +63,8 @@ Open **Settings** in the website and configure:
 - **NotebookLM folder:** where NotebookLM source files will be staged
 - **Obsidian vault:** optional; choose a folder containing `.obsidian`
 - **Default AI provider and model:** optional
+- **Default note length and instructions:** optional
+- **Updates:** choose whether to check, download, or install automatically
 
 Click **Save Configuration**, then **Login to Canvas**. Complete institutional
 login and MFA in the visible browser window. The application detects a
@@ -129,6 +138,15 @@ Choose **Refresh models** to query the selected provider's model endpoint. A
 successful result is cached locally; the previous cache or built-in list remains
 available if refreshing fails. Normal page loads do not contact AI providers.
 
+The note-length presets control both the requested level of detail and the
+provider output-token budget. Optional instructions can change emphasis and
+organization, but the built-in prompt still requires transcript grounding and
+marks unclear source material. Per-run values can override the saved defaults.
+
+PDF and Word exports are rendered as native documents, including real tables,
+nested lists, styled headings, page headers, and page numbers. They are not
+Markdown text placed inside a document container.
+
 AI transcript content is sent only when an AI operation is selected. Review the
 provider's privacy terms and your institution's policy before sending lecture
 material to a third-party service. Local/Ollama requests use
@@ -139,8 +157,14 @@ material to a third-party service. Local/Ollama requests use
 The packaged app keeps private state under:
 
 ```text
-~/Library/Application Support/Dental Lecture Manager/
+~/Library/Application Support/Canvas Lecture AI/
 ```
+
+Upgrades from Dental Lecture Manager continue using the existing
+`~/Library/Application Support/Dental Lecture Manager/` folder when present, so
+saved Canvas sessions, configuration, databases, and AI keys remain available.
+New installations use the Canvas Lecture AI folder. Existing Keychain entries
+are also read automatically and do not need to be entered again.
 
 This includes `config.toml`, Canvas session state, the dedicated browser profile,
 SQLite data, logs, diagnostics, and AI note previews. Downloaded lectures and
@@ -160,8 +184,8 @@ Requirements:
 - An authorized Canvas account
 
 ```bash
-git clone https://github.com/hanlin317/dental-lecture-manager.git
-cd dental-lecture-manager
+git clone https://github.com/hanlin317/canvas-lecture-ai.git
+cd canvas-lecture-ai
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
@@ -177,6 +201,8 @@ After editable installation, the shorter CLI command is also available:
 
 ```bash
 lecture-download serve
+# or
+canvas-lecture-ai serve
 ```
 
 Other commands:
@@ -198,6 +224,18 @@ Keychain or environment variables, not `config.toml`.
 The application binds to `127.0.0.1` by default. Do not expose it to a public
 network: the local web interface is designed for one trusted user and does not
 provide web authentication.
+
+## Updates
+
+Packaged releases can check GitHub Releases for updates. Each release contains
+an Ed25519-signed manifest; the app verifies that signature and the DMG SHA-256
+checksum before installation. Installation validates the app bundle's identity
+and version, keeps the previous app as a rollback copy, and reopens the new app.
+
+Automatic checking is enabled by default. Automatic download and installation
+are opt-in, and installation waits until no lecture job is running. Update
+checks can be disabled in Settings. Source installations are updated through
+Git and cannot use the in-app installer.
 
 ## Local Transcript Fallback
 
@@ -223,11 +261,11 @@ bash 2026-10-25-build-macos.sh
 ```
 
 The build creates an isolated packaging environment, downloads Playwright
-Chromium, bundles an FFmpeg binary, creates `dist/Dental Lecture Manager.app`,
-ad-hoc signs it, and writes the versioned DMG plus SHA-256 checksum to `dist/`.
+Chromium, bundles an FFmpeg binary, creates `dist/Canvas Lecture AI.app`, ad-hoc
+signs it, and writes the versioned DMG plus SHA-256 checksum to `dist/`.
 
 Pushing a `v*` tag runs the same tests and build on GitHub Actions, then attaches
-the DMG and checksum to a GitHub release.
+the DMG, checksum, signed update manifest, and signature to a GitHub release.
 
 ## Known Limitations
 
@@ -243,5 +281,5 @@ the DMG and checksum to a GitHub release.
 
 ## License
 
-Dental Lecture Manager is released under the
+Canvas Lecture AI is released under the
 [MIT License](2026-10-25-LICENSE.md).

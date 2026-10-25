@@ -6,7 +6,11 @@ from pathlib import Path
 
 from app.ai.base import AIRequest
 from app.ai.factory import get_ai_provider
-from app.ai.prompts import STUDY_NOTE_SYSTEM_PROMPT, build_study_note_prompt
+from app.ai.prompts import (
+    STUDY_NOTE_SYSTEM_PROMPT,
+    build_study_note_prompt,
+    note_length_tokens,
+)
 from app.canvas.client import CanvasClient
 from app.config import Settings
 from app.database import Database
@@ -106,7 +110,9 @@ class PipelineService:
                 self._record_resolution_failure(lecture, "download_video", resolution_error)
                 result["video"] = "failed"
             else:
-                result["video"] = await self._download_video(lecture, context, topic_dir, options, resolved)
+                result["video"] = await self._download_video(
+                    lecture, context, topic_dir, options, resolved
+                )
             finish()
         if options.download_slides:
             begin(lecture_step("Downloading slides"))
@@ -155,7 +161,9 @@ class PipelineService:
                 destination += " and Markdown in Obsidian"
             begin(lecture_step(f"Generating AI notes and saving {destination}"))
             if transcript_path.exists():
-                result["ai_notes"] = await self._generate_ai_note(lecture, context, transcript_path, options)
+                result["ai_notes"] = await self._generate_ai_note(
+                    lecture, context, transcript_path, options
+                )
             else:
                 result["ai_notes"] = "unavailable"
                 self.db.upsert_processing(
@@ -232,7 +240,9 @@ class PipelineService:
 
     async def _resolve_echo_assets(self, lecture: Lecture) -> ResolvedEchoAssets:
         with self.db.connect() as conn:
-            course = conn.execute("SELECT * FROM courses WHERE id = ?", (lecture.course_id,)).fetchone()
+            course = conn.execute(
+                "SELECT * FROM courses WHERE id = ?", (lecture.course_id,)
+            ).fetchone()
         if not course or not lecture.recording_url:
             return ResolvedEchoAssets()
         launch_urls = await self.canvas.echo360_navigation_links(str(course["canvas_id"]))
@@ -287,14 +297,28 @@ class PipelineService:
 
     def _context_and_dir(self, lecture: Lecture) -> tuple[LectureContext, Path]:
         with self.db.connect() as conn:
-            course = conn.execute("SELECT * FROM courses WHERE id = ?", (lecture.course_id,)).fetchone()
-            topic = conn.execute("SELECT * FROM topics WHERE id = ?", (lecture.topic_id,)).fetchone() if lecture.topic_id else None
+            course = conn.execute(
+                "SELECT * FROM courses WHERE id = ?", (lecture.course_id,)
+            ).fetchone()
+            topic = (
+                conn.execute("SELECT * FROM topics WHERE id = ?", (lecture.topic_id,)).fetchone()
+                if lecture.topic_id
+                else None
+            )
         if not course:
             raise ValueError("lecture has no course")
         topic_name = topic["name"] if topic else "Lectures"
-        number = lecture.lecture_number or number_for_position(topic["numbering_prefix"] if topic else "", lecture.position or 1)
+        number = lecture.lecture_number or number_for_position(
+            topic["numbering_prefix"] if topic else "", lecture.position or 1
+        )
         title = lecture.custom_title or lecture.original_title
-        base = Path(topic["download_directory"]) if topic and topic["download_directory"] else expand_path(self.settings.paths.download_root) / f"{course['code']} Recorded Lectures" / topic_name
+        base = (
+            Path(topic["download_directory"])
+            if topic and topic["download_directory"]
+            else expand_path(self.settings.paths.download_root)
+            / f"{course['code']} Recorded Lectures"
+            / topic_name
+        )
         context = LectureContext(
             course_code=course["code"],
             topic_name=topic_name,
@@ -306,10 +330,20 @@ class PipelineService:
         )
         return context, base
 
-    async def _download_asset(self, lecture: Lecture, kind: str, topic_dir: Path, extension: str, options: PipelineOptions) -> str:
-        assets = [asset for asset in self.db.list_assets(lecture.id or 0) if asset.kind == kind and asset.remote_url]
+    async def _download_asset(
+        self, lecture: Lecture, kind: str, topic_dir: Path, extension: str, options: PipelineOptions
+    ) -> str:
+        assets = [
+            asset
+            for asset in self.db.list_assets(lecture.id or 0)
+            if asset.kind == kind and asset.remote_url
+        ]
         if not assets:
-            self.db.upsert_processing(ProcessingRecord(lecture_id=lecture.id or 0, stage=f"download_{kind}", status="unavailable"))
+            self.db.upsert_processing(
+                ProcessingRecord(
+                    lecture_id=lecture.id or 0, stage=f"download_{kind}", status="unavailable"
+                )
+            )
             return "unavailable"
         asset = assets[0]
         context, _ = self._context_and_dir(lecture)
@@ -318,20 +352,47 @@ class PipelineService:
             asset.local_path = str(destination)
             asset.status = DownloadStatus.COMPLETE
             self.db.upsert_asset(asset)
-            self.db.upsert_processing(ProcessingRecord(lecture_id=lecture.id or 0, stage=f"download_{kind}", status="skipped", output_file=str(destination)))
+            self.db.upsert_processing(
+                ProcessingRecord(
+                    lecture_id=lecture.id or 0,
+                    stage=f"download_{kind}",
+                    status="skipped",
+                    output_file=str(destination),
+                )
+            )
             return "skipped"
         try:
-            status = await self.downloads.download(asset.remote_url or "", destination, overwrite=options.overwrite)
+            status = await self.downloads.download(
+                asset.remote_url or "", destination, overwrite=options.overwrite
+            )
             asset.local_path = str(destination)
-            asset.status = DownloadStatus.COMPLETE if status in {"complete", "skipped"} else DownloadStatus(asset.status)
+            asset.status = (
+                DownloadStatus.COMPLETE
+                if status in {"complete", "skipped"}
+                else DownloadStatus(asset.status)
+            )
             self.db.upsert_asset(asset)
-            self.db.upsert_processing(ProcessingRecord(lecture_id=lecture.id or 0, stage=f"download_{kind}", status=status, output_file=str(destination)))
+            self.db.upsert_processing(
+                ProcessingRecord(
+                    lecture_id=lecture.id or 0,
+                    stage=f"download_{kind}",
+                    status=status,
+                    output_file=str(destination),
+                )
+            )
             return status
         except Exception as exc:  # noqa: BLE001
             asset.status = DownloadStatus.FAILED
             asset.error_message = str(exc)
             self.db.upsert_asset(asset)
-            self.db.upsert_processing(ProcessingRecord(lecture_id=lecture.id or 0, stage=f"download_{kind}", status="failed", error_message=str(exc)))
+            self.db.upsert_processing(
+                ProcessingRecord(
+                    lecture_id=lecture.id or 0,
+                    stage=f"download_{kind}",
+                    status="failed",
+                    error_message=str(exc),
+                )
+            )
             return "failed"
 
     async def _download_video(
@@ -344,7 +405,9 @@ class PipelineService:
     ) -> str:
         if not resolved.video_url or not resolved.audio_url:
             self.db.upsert_processing(
-                ProcessingRecord(lecture_id=lecture.id or 0, stage="download_video", status="unavailable")
+                ProcessingRecord(
+                    lecture_id=lecture.id or 0, stage="download_video", status="unavailable"
+                )
             )
             return "unavailable"
         destination = topic_dir / f"{self._output_stem(context)}.mp4"
@@ -357,7 +420,10 @@ class PipelineService:
                 audio_headers=resolved.headers_by_url.get(resolved.audio_url),
                 overwrite=options.overwrite,
             )
-            asset = next((item for item in self.db.list_assets(lecture.id or 0) if item.kind == "video"), None)
+            asset = next(
+                (item for item in self.db.list_assets(lecture.id or 0) if item.kind == "video"),
+                None,
+            )
             if asset:
                 asset.local_path = str(destination)
                 asset.status = DownloadStatus.COMPLETE
@@ -450,15 +516,30 @@ class PipelineService:
     ) -> str:
         canonical = self._canonical_transcript_path(topic_dir, context)
         if canonical.exists() and options.skip_existing and not options.overwrite:
-            self.db.upsert_processing(ProcessingRecord(lecture_id=lecture.id or 0, stage="canonical_transcript", status="skipped", output_file=str(canonical)))
+            self.db.upsert_processing(
+                ProcessingRecord(
+                    lecture_id=lecture.id or 0,
+                    stage="canonical_transcript",
+                    status="skipped",
+                    output_file=str(canonical),
+                )
+            )
             return "skipped"
 
-        transcript_assets = [asset for asset in self.db.list_assets(lecture.id or 0) if asset.kind in {"transcript", "vtt"} and asset.remote_url]
+        transcript_assets = [
+            asset
+            for asset in self.db.list_assets(lecture.id or 0)
+            if asset.kind in {"transcript", "vtt"} and asset.remote_url
+        ]
         raw_text = ""
         method = TranscriptMethod.UNKNOWN
         if transcript_assets:
             asset = transcript_assets[0]
-            suffix = ".vtt" if asset.kind == "vtt" or (asset.remote_url or "").lower().endswith(".vtt") else ".txt"
+            suffix = (
+                ".vtt"
+                if asset.kind == "vtt" or (asset.remote_url or "").lower().endswith(".vtt")
+                else ".txt"
+            )
             raw_path = topic_dir / f"{self._output_stem(context)}.official{suffix}"
             try:
                 await self.downloads.download(
@@ -470,10 +551,14 @@ class PipelineService:
             except RuntimeError:
                 if not raw_path.exists():
                     raise
-                logger.warning("Using cached official transcript after Echo360 refresh failed: %s", raw_path)
+                logger.warning(
+                    "Using cached official transcript after Echo360 refresh failed: %s", raw_path
+                )
             raw = raw_path.read_text(encoding="utf-8", errors="replace")
             if suffix == ".vtt":
-                raw_text = clean_vtt(raw, include_timestamps=self.settings.transcripts.include_timestamps)
+                raw_text = clean_vtt(
+                    raw, include_timestamps=self.settings.transcripts.include_timestamps
+                )
                 method = TranscriptMethod.OFFICIAL_VTT
             else:
                 raw_text = clean_plain_transcript(raw)
@@ -488,10 +573,16 @@ class PipelineService:
                 self.settings.transcripts.whisper_model,
                 overwrite=options.overwrite,
             )
-            raw_text = clean_plain_transcript(whisper_path.read_text(encoding="utf-8", errors="replace"))
+            raw_text = clean_plain_transcript(
+                whisper_path.read_text(encoding="utf-8", errors="replace")
+            )
             method = TranscriptMethod.WHISPER
         else:
-            self.db.upsert_processing(ProcessingRecord(lecture_id=lecture.id or 0, stage="canonical_transcript", status="unavailable"))
+            self.db.upsert_processing(
+                ProcessingRecord(
+                    lecture_id=lecture.id or 0, stage="canonical_transcript", status="unavailable"
+                )
+            )
             return "unavailable"
 
         canonical.parent.mkdir(parents=True, exist_ok=True)
@@ -520,7 +611,9 @@ class PipelineService:
     def _canonical_transcript_path(self, topic_dir: Path, context: LectureContext) -> Path:
         return topic_dir / f"{self._output_stem(context)}.txt"
 
-    def _export_notebooklm(self, lecture: Lecture, context: LectureContext, transcript_path: Path) -> str:
+    def _export_notebooklm(
+        self, lecture: Lecture, context: LectureContext, transcript_path: Path
+    ) -> str:
         transcript = transcript_path.read_text(encoding="utf-8")
         staging = expand_path(self.settings.paths.notebooklm_staging_dir)
         output_dir = staging / context.course_code / context.topic_name
@@ -537,26 +630,55 @@ class PipelineService:
         )
         return str(output)
 
-    async def _generate_ai_note(self, lecture: Lecture, context: LectureContext, transcript_path: Path, options: PipelineOptions) -> str:
+    async def _generate_ai_note(
+        self,
+        lecture: Lecture,
+        context: LectureContext,
+        transcript_path: Path,
+        options: PipelineOptions,
+    ) -> str:
         transcript = transcript_path.read_text(encoding="utf-8")
         provider = get_ai_provider(self.settings.ai.provider)
+        note_length = options.ai_note_length or self.settings.ai.note_length
+        custom_instructions = (
+            options.ai_custom_instructions.strip()
+            if options.ai_custom_instructions.strip()
+            else self.settings.ai.custom_instructions.strip()
+        )
+        prompt_id = (
+            f"{self.settings.ai.prompt_version}:{note_length}:"
+            f"{sha256_text(custom_instructions)[:10]}"
+        )
         body = await provider.generate_note(
             AIRequest(
                 system_prompt=STUDY_NOTE_SYSTEM_PROMPT,
-                user_prompt=build_study_note_prompt(context.course_code, context.topic_name, context.lecture_number, context.title, transcript),
+                user_prompt=build_study_note_prompt(
+                    context.course_code,
+                    context.topic_name,
+                    context.lecture_number,
+                    context.title,
+                    transcript,
+                    note_length=note_length,
+                    custom_instructions=custom_instructions,
+                ),
                 model=self.settings.ai.model,
                 temperature=self.settings.ai.temperature,
+                max_output_tokens=note_length_tokens(note_length),
             )
         )
         with self.db.connect() as conn:
-            topic = conn.execute("SELECT * FROM topics WHERE id = ?", (lecture.topic_id,)).fetchone() if lecture.topic_id else None
+            topic = (
+                conn.execute("SELECT * FROM topics WHERE id = ?", (lecture.topic_id,)).fetchone()
+                if lecture.topic_id
+                else None
+            )
         note = obsidian_note_markdown(
             context,
             body,
             parent_note=topic["parent_note"] if topic else None,
             ai_provider=provider.name,
             ai_model=self.settings.ai.model,
-            prompt_version=self.settings.ai.prompt_version,
+            prompt_version=prompt_id,
             transcript=transcript,
         )
         preview_dir = expand_path("local_data/previews")
@@ -571,7 +693,11 @@ class PipelineService:
             vault = self.settings.paths.obsidian_vault
             if not vault:
                 raise RuntimeError("Obsidian vault path is not configured.")
-            destination = Path(topic["obsidian_directory"]) if topic and topic["obsidian_directory"] else expand_path(vault) / context.course_code / context.topic_name
+            destination = (
+                Path(topic["obsidian_directory"])
+                if topic and topic["obsidian_directory"]
+                else expand_path(vault) / context.course_code / context.topic_name
+            )
             markdown_output = save_obsidian_note(
                 note, destination, context, overwrite=options.overwrite
             )
@@ -592,7 +718,7 @@ class PipelineService:
                 status="complete",
                 ai_provider=provider.name,
                 model=self.settings.ai.model,
-                prompt_version=self.settings.ai.prompt_version,
+                prompt_version=prompt_id,
                 transcript_hash=sha256_text(transcript),
                 transcript_file=str(transcript_path),
                 output_file=str(output),

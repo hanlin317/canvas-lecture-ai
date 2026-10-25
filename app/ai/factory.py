@@ -15,7 +15,8 @@ from app.ai.openai_provider import (
     OpenAIProvider,
 )
 
-KEYCHAIN_SERVICE = "Dental Lecture Manager API Keys"
+KEYCHAIN_SERVICE = "Canvas Lecture AI API Keys"
+LEGACY_KEYCHAIN_SERVICE = "Dental Lecture Manager API Keys"
 
 
 @dataclass(frozen=True)
@@ -177,8 +178,11 @@ def api_key_status(name: str) -> str:
         return "not required"
     if os.environ.get(spec.api_key_env or ""):
         return "environment"
-    result = _run_security(["find-generic-password", "-a", name, "-s", KEYCHAIN_SERVICE])
-    return "Keychain" if result.returncode == 0 else "missing"
+    for service in (KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE):
+        result = _run_security(["find-generic-password", "-a", name, "-s", service])
+        if result.returncode == 0:
+            return "Keychain"
+    return "missing"
 
 
 def load_api_key(name: str) -> str | None:
@@ -188,15 +192,14 @@ def load_api_key(name: str) -> str | None:
     environment_key = os.environ.get(spec.api_key_env or "")
     if environment_key:
         return environment_key
-    result = _run_security(
-        ["find-generic-password", "-a", name, "-s", KEYCHAIN_SERVICE, "-w"]
+    for service in (KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE):
+        result = _run_security(["find-generic-password", "-a", name, "-s", service, "-w"])
+        key = result.stdout.strip()
+        if result.returncode == 0 and key:
+            return key
+    raise RuntimeError(
+        f"No {spec.label} API key is configured. Save one in AI Settings or set {spec.api_key_env}."
     )
-    key = result.stdout.strip()
-    if result.returncode != 0 or not key:
-        raise RuntimeError(
-            f"No {spec.label} API key is configured. Save one in AI Settings or set {spec.api_key_env}."
-        )
-    return key
 
 
 def save_api_key(name: str, value: str) -> None:
@@ -298,10 +301,7 @@ async def fetch_provider_models(name: str) -> tuple[AIModelSpec, ...]:
         if not model_id or not _supports_note_generation(name, model_id, item):
             continue
         label = str(
-            item.get("displayName")
-            or item.get("display_name")
-            or item.get("name")
-            or model_id
+            item.get("displayName") or item.get("display_name") or item.get("name") or model_id
         ).removeprefix("models/")
         discovered.append((int(item.get("created", 0) or 0), model(model_id, label)))
 

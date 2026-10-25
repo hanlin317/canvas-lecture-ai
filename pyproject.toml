@@ -1,7 +1,7 @@
 [project]
-name = "dental-lecture-manager"
-version = "0.2.0"
-description = "Local Canvas/Echo360 dental lecture workflow manager"
+name = "canvas-lecture-ai"
+version = "0.3.0"
+description = "Canvas lecture downloader and AI notes generator for macOS"
 readme = "README.md"
 license = {file = "2026-10-25-LICENSE.md"}
 requires-python = ">=3.11"
@@ -26,17 +26,23 @@ dependencies = [
   "playwright>=1.45",
   "python-multipart>=0.0.9",
   "imageio-ffmpeg>=0.6",
+  "markdown-it-py>=3.0",
+  "python-docx>=1.1",
+  "reportlab>=4.2",
+  "cryptography>=43.0",
+  "packaging>=24.0",
   "mlx-whisper>=0.4.3",
   "mlx>=0.23.2,<0.24",
 ]
 
 [project.urls]
-Homepage = "https://github.com/hanlin317/dental-lecture-manager"
-Repository = "https://github.com/hanlin317/dental-lecture-manager"
-Issues = "https://github.com/hanlin317/dental-lecture-manager/issues"
+Homepage = "https://github.com/hanlin317/canvas-lecture-ai"
+Repository = "https://github.com/hanlin317/canvas-lecture-ai"
+Issues = "https://github.com/hanlin317/canvas-lecture-ai/issues"
 
 [project.scripts]
 lecture-download = "app.__main__:main"
+canvas-lecture-ai = "app.__main__:main"
 
 [project.optional-dependencies]
 ai = [

@@ -29,7 +29,10 @@ transcript_method: {context.transcript_method}
 
 def export_notebooklm(context: LectureContext, transcript: str, output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / f"{lecture_stem(context.course_code, context.topic_name, context.lecture_number, context.title)}.md"
+    path = (
+        output_dir
+        / f"{lecture_stem(context.course_code, context.topic_name, context.lecture_number, context.title)}.md"
+    )
     tmp = path.with_suffix(path.suffix + ".part")
     tmp.write_text(notebooklm_markdown(context, transcript), encoding="utf-8")
     tmp.replace(path)

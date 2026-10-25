@@ -29,25 +29,45 @@ jobs:
       - name: Verify packaged runtime
         run: |
           DLM_DATA_DIR="$RUNNER_TEMP/dlm-self-check" \
-            'dist/Dental Lecture Manager.app/Contents/MacOS/Dental Lecture Manager' \
+            'dist/Canvas Lecture AI.app/Contents/MacOS/Canvas Lecture AI' \
             self-check --output "$RUNNER_TEMP/dlm-self-check.json"
-          python -c 'import json, os; data=json.load(open(os.environ["RUNNER_TEMP"] + "/dlm-self-check.json")); assert data["status"] == "ok" and data["mlx_whisper"]'
-          codesign --verify --deep --strict 'dist/Dental Lecture Manager.app'
+          python -c 'import json, os; data=json.load(open(os.environ["RUNNER_TEMP"] + "/dlm-self-check.json")); assert data["status"] == "ok" and data["mlx_whisper"] and all(data["document_exporters"].values())'
+          codesign --verify --deep --strict 'dist/Canvas Lecture AI.app'
           cd dist && shasum -a 256 -c *.dmg.sha256
+      - name: Sign update manifest
+        env:
+          UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY }}
+        run: |
+          VERSION="$(python -c 'import pathlib,tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match project version $VERSION" >&2
+            exit 1
+          fi
+          DMG_NAME="Canvas-Lecture-AI-v${VERSION}-arm64.dmg"
+          MANIFEST_NAME="Canvas-Lecture-AI-v${VERSION}-update.json"
+          export VERSION DMG_NAME MANIFEST_NAME
+          export DMG_SHA256="$(shasum -a 256 "dist/$DMG_NAME" | awk '{print $1}')"
+          export DMG_SIZE="$(stat -f '%z' "dist/$DMG_NAME")"
+          python -c 'import json,os,pathlib; version=os.environ["VERSION"]; repo=os.environ["GITHUB_REPOSITORY"]; name=os.environ["DMG_NAME"]; data={"app_name":"Canvas Lecture AI.app","dmg_url":f"https://github.com/{repo}/releases/download/v{version}/{name}","minimum_macos":"14.0","release_url":f"https://github.com/{repo}/releases/tag/v{version}","sha256":os.environ["DMG_SHA256"],"size":int(os.environ["DMG_SIZE"]),"version":version}; pathlib.Path("dist",os.environ["MANIFEST_NAME"]).write_text(json.dumps(data,sort_keys=True,separators=(",",":")),encoding="utf-8")'
+          printf '%s' "$UPDATE_SIGNING_PRIVATE_KEY" > "$RUNNER_TEMP/update-signing-key.pem"
+          openssl pkeyutl -sign -rawin -inkey "$RUNNER_TEMP/update-signing-key.pem" -in "dist/$MANIFEST_NAME" -out "dist/$MANIFEST_NAME.sig"
+          rm "$RUNNER_TEMP/update-signing-key.pem"
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dental-lecture-manager-arm64
+          name: canvas-lecture-ai-arm64
           path: |
             dist/*.dmg
             dist/*.sha256
+            dist/*-update.json
+            dist/*-update.json.sig
       - name: Publish GitHub release
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/*.dmg dist/*.sha256 --clobber
+            gh release upload "$GITHUB_REF_NAME" dist/*.dmg dist/*.sha256 dist/*-update.json dist/*-update.json.sig --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/*.dmg dist/*.sha256 --generate-notes --verify-tag
+            gh release create "$GITHUB_REF_NAME" dist/*.dmg dist/*.sha256 dist/*-update.json dist/*-update.json.sig --generate-notes --verify-tag
           fi

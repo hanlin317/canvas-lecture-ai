@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 
 from app.ai.factory import AIModelSpec
@@ -27,7 +31,7 @@ def test_index_page_renders(tmp_path, monkeypatch) -> None:
     client = TestClient(create_app())
     response = client.get("/")
     assert response.status_code == 200
-    assert "Dental Lecture Manager" in response.text
+    assert "Canvas Lecture AI" in response.text
     assert "Canvas session: not saved" in response.text
     assert "Anthropic Claude" in response.text
     assert "Google Gemini" in response.text
@@ -56,8 +60,7 @@ def test_index_page_renders(tmp_path, monkeypatch) -> None:
 def test_first_run_requires_canvas_setup_before_login(tmp_path, monkeypatch) -> None:
     config = tmp_path / "config.toml"
     config.write_text(
-        f"[app]\ndatabase_path = '{tmp_path / 'test.sqlite3'}'\n"
-        "[canvas]\nbase_url = ''\n",
+        f"[app]\ndatabase_path = '{tmp_path / 'test.sqlite3'}'\n[canvas]\nbase_url = ''\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("DLM_CONFIG", str(config))
@@ -94,6 +97,10 @@ def test_app_settings_route_saves_validated_configuration(tmp_path, monkeypatch)
             "obsidian_vault": str(vault),
             "ai_provider": "anthropic",
             "ai_model": "claude-sonnet-5",
+            "ai_note_length": "detailed",
+            "ai_custom_instructions": "Prefer concise clinical tables.",
+            "updates_check_automatically": "on",
+            "updates_download_automatically": "on",
             "whisper_enabled": "on",
             "whisper_model": "whisper-test",
             "course_code": "SDDM6321",
@@ -108,6 +115,11 @@ def test_app_settings_route_saves_validated_configuration(tmp_path, monkeypatch)
     assert settings.canvas.base_url == "https://canvas.new.example.edu"
     assert settings.ai.provider == "anthropic"
     assert settings.ai.model == "claude-sonnet-5"
+    assert settings.ai.note_length == "detailed"
+    assert settings.ai.custom_instructions == "Prefer concise clinical tables."
+    assert settings.updates.check_automatically is True
+    assert settings.updates.download_automatically is True
+    assert settings.updates.install_automatically is False
     assert settings.transcripts.whisper_enabled is True
     assert "# retained" in config.read_text(encoding="utf-8")
     assert settings.downloads.concurrency == 5
@@ -256,7 +268,9 @@ def test_api_key_route_uses_secure_store(tmp_path, monkeypatch) -> None:
     )
     monkeypatch.setenv("DLM_CONFIG", str(config))
     saved = {}
-    monkeypatch.setattr("app.web.routes.save_api_key", lambda provider, key: saved.update({provider: key}))
+    monkeypatch.setattr(
+        "app.web.routes.save_api_key", lambda provider, key: saved.update({provider: key})
+    )
     client = TestClient(create_app())
 
     response = client.post(
@@ -393,6 +407,8 @@ def test_pipeline_route_passes_selected_ai_note_format(tmp_path, monkeypatch) ->
 
     async def run_job(job_id, lecture_ids, options, settings, db):
         captured["format"] = options.ai_note_format
+        captured["length"] = options.ai_note_length
+        captured["instructions"] = options.ai_custom_instructions
 
     monkeypatch.setattr("app.web.routes.run_pipeline_job", run_job)
     client = TestClient(create_app())
@@ -403,6 +419,8 @@ def test_pipeline_route_passes_selected_ai_note_format(tmp_path, monkeypatch) ->
             "lecture_ids": "1",
             "ai_notes": "on",
             "ai_note_format": "docx",
+            "ai_note_length": "comprehensive",
+            "ai_custom_instructions": "Focus on radiographic interpretation.",
             "ai_provider": "openai",
             "ai_model": "gpt-6.1-sol",
             "course_code": "SDDM6321",
@@ -412,6 +430,47 @@ def test_pipeline_route_passes_selected_ai_note_format(tmp_path, monkeypatch) ->
 
     assert response.status_code == 303
     assert captured["format"] == "docx"
+    assert captured["length"] == "comprehensive"
+    assert captured["instructions"] == "Focus on radiographic interpretation."
+
+
+def test_update_manifest_signature_accepts_authentic_content_and_rejects_tampering(
+    monkeypatch,
+) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    public_key = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    monkeypatch.setattr(web_routes, "UPDATE_PUBLIC_KEY_B64", base64.b64encode(public_key).decode())
+    manifest = json.dumps(
+        {
+            "app_name": "Canvas Lecture AI.app",
+            "dmg_url": "https://example.test/Canvas-Lecture-AI-v9.9.9-arm64.dmg",
+            "sha256": "a" * 64,
+            "version": "9.9.9",
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    signature = private_key.sign(manifest)
+
+    assert web_routes._verify_update_manifest(manifest, signature)["version"] == "9.9.9"
+    with pytest.raises(RuntimeError, match="signature is invalid"):
+        web_routes._verify_update_manifest(manifest + b" ", signature)
+
+
+def test_update_install_is_unavailable_when_running_from_source(monkeypatch) -> None:
+    previous_state = web_routes.UPDATE_STATE.copy()
+    web_routes.UPDATE_STATE = {"status": "downloaded", "version": "9.9.9"}
+    monkeypatch.setattr(web_routes, "_current_app_path", lambda: None)
+    try:
+        response = TestClient(create_app()).post("/updates/install")
+    finally:
+        web_routes.UPDATE_STATE = previous_state
+
+    assert response.status_code == 409
+    assert "packaged macOS app" in response.json()["detail"]
 
 
 def test_running_job_status_includes_eta(tmp_path, monkeypatch) -> None:
@@ -499,7 +558,9 @@ def test_index_shows_selected_course_lectures(tmp_path, monkeypatch) -> None:
     db = Database(db_path)
     db.upsert_course(Course(canvas_id="1", code="FIRST", name="First Course"))
     second = db.upsert_course(Course(canvas_id="2", code="SECOND", name="Second Course"))
-    topic = db.upsert_topic(Topic(course_id=second.id or 0, name="Endodontics: Instructional Videos"))
+    topic = db.upsert_topic(
+        Topic(course_id=second.id or 0, name="Endodontics: Instructional Videos")
+    )
     db.upsert_lecture(
         Lecture(
             source_id="rec-second",
@@ -516,7 +577,7 @@ def test_index_shows_selected_course_lectures(tmp_path, monkeypatch) -> None:
     assert "Lectures - SECOND" in response.text
     assert "Real Lecture" in response.text
     assert "Endodontics: Instructional Videos" in response.text
-    assert 'data-topic-select' in response.text
+    assert "data-topic-select" in response.text
     assert "Select all" in response.text
     assert "02/04/2026" in response.text
     assert "2026-04-02T17:00:00.000" not in response.text
@@ -527,18 +588,13 @@ def test_course_selector_distinguishes_duplicate_course_codes(tmp_path, monkeypa
     db_path = tmp_path / "test.sqlite3"
     config = tmp_path / "config.toml"
     config.write_text(
-        f"[app]\ndatabase_path = '{db_path}'\n"
-        "[canvas]\nbase_url = 'https://canvas.example'\n",
+        f"[app]\ndatabase_path = '{db_path}'\n[canvas]\nbase_url = 'https://canvas.example'\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("DLM_CONFIG", str(config))
     db = Database(db_path)
-    older = db.upsert_course(
-        Course(canvas_id="2025", code="DENT1000", name="Dentistry 2025")
-    )
-    newer = db.upsert_course(
-        Course(canvas_id="2026", code="DENT1000", name="Dentistry 2026")
-    )
+    older = db.upsert_course(Course(canvas_id="2025", code="DENT1000", name="Dentistry 2025"))
+    newer = db.upsert_course(Course(canvas_id="2026", code="DENT1000", name="Dentistry 2026"))
     topic = db.upsert_topic(Topic(course_id=newer.id or 0, name="New lectures"))
     db.upsert_lecture(
         Lecture(
@@ -570,7 +626,12 @@ def test_recent_pipeline_output_is_visible_and_downloadable(tmp_path, monkeypatc
     course = db.upsert_course(Course(canvas_id="1", code="DENT1000", name="Dental"))
     topic = db.upsert_topic(Topic(course_id=course.id or 0, name="Endodontics"))
     lecture = db.upsert_lecture(
-        Lecture(source_id="rec-1", course_id=course.id or 0, topic_id=topic.id, original_title="Lecture One")
+        Lecture(
+            source_id="rec-1",
+            course_id=course.id or 0,
+            topic_id=topic.id,
+            original_title="Lecture One",
+        )
     )
     output = tmp_path / "lecture.txt"
     output.write_text("transcript output", encoding="utf-8")

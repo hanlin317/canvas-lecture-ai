@@ -24,7 +24,7 @@ class AnthropicProvider(AIProvider):
                 },
                 json={
                     "model": request.model,
-                    "max_tokens": 8192,
+                    "max_tokens": request.max_output_tokens,
                     "temperature": request.temperature,
                     "system": request.system_prompt,
                     "messages": [{"role": "user", "content": request.user_prompt}],
@@ -32,4 +32,6 @@ class AnthropicProvider(AIProvider):
             )
             response.raise_for_status()
         blocks = response.json().get("content", [])
-        return "\n".join(str(block.get("text", "")) for block in blocks if block.get("type") == "text")
+        return "\n".join(
+            str(block.get("text", "")) for block in blocks if block.get("type") == "text"
+        )

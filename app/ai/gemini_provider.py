@@ -25,7 +25,10 @@ class GeminiProvider(AIProvider):
                 json={
                     "systemInstruction": {"parts": [{"text": request.system_prompt}]},
                     "contents": [{"role": "user", "parts": [{"text": request.user_prompt}]}],
-                    "generationConfig": {"temperature": request.temperature},
+                    "generationConfig": {
+                        "temperature": request.temperature,
+                        "maxOutputTokens": request.max_output_tokens,
+                    },
                 },
             )
             response.raise_for_status()

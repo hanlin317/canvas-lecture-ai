@@ -162,7 +162,9 @@ class Database:
                     course.is_active,
                 ),
             )
-            row = conn.execute("SELECT * FROM courses WHERE canvas_id = ?", (course.canvas_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM courses WHERE canvas_id = ?", (course.canvas_id,)
+            ).fetchone()
             return Course(**dict(row))
 
     def list_courses(self) -> list[Course]:
@@ -307,7 +309,9 @@ class Database:
                     lecture.position,
                 ),
             )
-            row = conn.execute("SELECT * FROM lectures WHERE source_id = ?", (lecture.source_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM lectures WHERE source_id = ?", (lecture.source_id,)
+            ).fetchone()
             return Lecture(**dict(row))
 
     def list_lectures(self, course_id: int, topic_id: int | None = None) -> list[Lecture]:
@@ -451,7 +455,9 @@ class Database:
 
     def list_assets(self, lecture_id: int) -> list[Asset]:
         with self.connect() as conn:
-            rows = conn.execute("SELECT * FROM assets WHERE lecture_id = ?", (lecture_id,)).fetchall()
+            rows = conn.execute(
+                "SELECT * FROM assets WHERE lecture_id = ?", (lecture_id,)
+            ).fetchall()
             return [Asset(**dict(row)) for row in rows]
 
     def upsert_processing(self, record: ProcessingRecord) -> ProcessingRecord:
@@ -496,14 +502,18 @@ class Database:
             topic = conn.execute("SELECT * FROM topics WHERE id = ?", (topic_id,)).fetchone()
             if not topic:
                 raise ValueError(f"topic not found: {topic_id}")
-            course = conn.execute("SELECT * FROM courses WHERE id = ?", (topic["course_id"],)).fetchone()
+            course = conn.execute(
+                "SELECT * FROM courses WHERE id = ?", (topic["course_id"],)
+            ).fetchone()
             lectures = conn.execute(
                 "SELECT * FROM lectures WHERE topic_id = ? ORDER BY position, original_title",
                 (topic_id,),
             ).fetchall()
             lecture_data = []
             for lecture in lectures:
-                assets = conn.execute("SELECT * FROM assets WHERE lecture_id = ?", (lecture["id"],)).fetchall()
+                assets = conn.execute(
+                    "SELECT * FROM assets WHERE lecture_id = ?", (lecture["id"],)
+                ).fetchall()
                 processing = conn.execute(
                     "SELECT * FROM processing WHERE lecture_id = ? ORDER BY updated_at DESC",
                     (lecture["id"],),

@@ -239,7 +239,9 @@ def _parse_course_groups(response: str, valid_canvas_ids: set[str]) -> dict[str,
         for canvas_id in canvas_ids:
             value = str(canvas_id)
             if value not in valid_canvas_ids or value in result:
-                raise ValueError("AI course grouping contains an unknown or duplicate Canvas course ID.")
+                raise ValueError(
+                    "AI course grouping contains an unknown or duplicate Canvas course ID."
+                )
             result[value] = name
     if set(result) != valid_canvas_ids:
         raise ValueError("AI course grouping did not assign every course.")

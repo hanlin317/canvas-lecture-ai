@@ -151,6 +151,8 @@ class PipelineOptions(BaseModel):
     notebooklm: bool = True
     ai_notes: bool = False
     ai_note_format: Literal["markdown", "pdf", "docx"] = "markdown"
+    ai_note_length: Literal["concise", "standard", "detailed", "comprehensive"] = "standard"
+    ai_custom_instructions: str = ""
     save_obsidian: bool = False
     overwrite: bool = False
     skip_existing: bool = True

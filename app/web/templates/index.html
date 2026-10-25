@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Dental Lecture Manager</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20261025-6">
+  <title>Canvas Lecture AI</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20261025-8">
 </head>
 <body>
   <header>
-    <h1>Dental Lecture Manager</h1>
-    <p>Local Canvas, Echo360, NotebookLM, and Obsidian workflow.</p>
+    <h1>Canvas Lecture AI</h1>
+    <p>Lecture Downloader &amp; AI Notes Generator</p>
   </header>
 
   <main>
@@ -35,6 +35,20 @@
       <div class="job-progress-details">
         <span id="job-progress-step">Waiting for the server</span>
         <span id="job-progress-eta">Estimating time remaining...</span>
+      </div>
+    </section>
+
+    <section id="update-banner" class="update-banner wide" hidden aria-live="polite">
+      <div>
+        <span class="update-kicker">Application update</span>
+        <strong id="update-title">Checking for updates</strong>
+        <span id="update-detail"></span>
+      </div>
+      <progress id="update-progress" max="100" value="0" hidden>0%</progress>
+      <div class="update-actions">
+        <a id="update-release-link" class="secondary-button update-link" href="#" target="_blank" rel="noreferrer" hidden>Release notes</a>
+        <button id="update-download" type="button" hidden>Download update</button>
+        <button id="update-install" type="button" hidden>Install and restart</button>
       </div>
     </section>
 
@@ -170,6 +184,29 @@
           </span>
         </div>
 
+        <label for="config-note-length">Default note length</label>
+        <select id="config-note-length" name="ai_note_length">
+          <option value="concise" {% if settings.ai.note_length == 'concise' %}selected{% endif %}>Concise</option>
+          <option value="standard" {% if settings.ai.note_length == 'standard' %}selected{% endif %}>Standard</option>
+          <option value="detailed" {% if settings.ai.note_length == 'detailed' %}selected{% endif %}>Detailed</option>
+          <option value="comprehensive" {% if settings.ai.note_length == 'comprehensive' %}selected{% endif %}>Comprehensive</option>
+        </select>
+
+        <label for="config-ai-instructions">Default AI instructions</label>
+        <div class="prompt-control">
+          <textarea id="config-ai-instructions" name="ai_custom_instructions" rows="5" maxlength="6000" placeholder="Optional: emphasize particular clinical topics or use a preferred structure.">{{ settings.ai.custom_instructions }}</textarea>
+          <button type="button" class="secondary-button" data-reset-prompt="config-ai-instructions">Reset to recommended</button>
+        </div>
+
+        <label>Updates</label>
+        <div class="update-settings">
+          <label class="checkbox-setting"><input type="checkbox" name="updates_check_automatically" {% if settings.updates.check_automatically %}checked{% endif %}> Check automatically</label>
+          <label class="checkbox-setting"><input type="checkbox" name="updates_download_automatically" {% if settings.updates.download_automatically %}checked{% endif %}> Download automatically</label>
+          <label class="checkbox-setting"><input type="checkbox" name="updates_install_automatically" {% if settings.updates.install_automatically %}checked{% endif %}> Install automatically when idle</label>
+          <button id="update-check-now" type="button" class="secondary-button">Check now</button>
+          <span id="update-settings-status">Version {{ current_version }}</span>
+        </div>
+
         <label for="whisper-model">Whisper model</label>
         <input id="whisper-model" name="whisper_model" value="{{ settings.transcripts.whisper_model }}">
 
@@ -236,28 +273,41 @@
       {% endif %}
       <form method="post" action="/pipeline">
         <input type="hidden" name="course_code" value="{{ selected_course.code if selected_course else '' }}">
-        <div class="actions">
+        <div class="pipeline-options">
+        <div class="pipeline-toggles">
           <label><input type="checkbox" name="download_video" checked> Video</label>
           <label><input type="checkbox" name="download_slides"> Slides</label>
           <label><input type="checkbox" name="download_transcript" checked> Transcript</label>
           <label title="Runs locally. The model downloads once when first needed."><input type="checkbox" name="whisper_fallback" {% if settings.transcripts.whisper_enabled %}checked{% endif %}> Local transcript fallback</label>
           <label><input type="checkbox" name="notebooklm" checked> NotebookLM</label>
           <label><input id="ai-notes" type="checkbox" name="ai_notes"> AI notes</label>
-          <label class="field-label" for="ai-note-format">Note format</label>
+          <label><input type="checkbox" name="save_obsidian"> Save to Obsidian</label>
+          <label><input type="checkbox" name="overwrite"> Overwrite</label>
+        </div>
+        <div class="pipeline-ai-controls">
+          <label class="pipeline-field" for="ai-note-format"><span>Note format</span>
           <select id="ai-note-format" name="ai_note_format" disabled>
             <option value="markdown">Markdown (.md)</option>
             <option value="pdf">PDF (.pdf)</option>
             <option value="docx">Word (.docx)</option>
           </select>
-          <label><input type="checkbox" name="save_obsidian"> Save to Obsidian</label>
-          <label><input type="checkbox" name="overwrite"> Overwrite</label>
-          <label class="field-label" for="ai-provider">AI provider</label>
+          </label>
+          <label class="pipeline-field" for="ai-note-length"><span>Note length</span>
+          <select id="ai-note-length" name="ai_note_length" disabled>
+            <option value="concise" {% if settings.ai.note_length == 'concise' %}selected{% endif %}>Concise</option>
+            <option value="standard" {% if settings.ai.note_length == 'standard' %}selected{% endif %}>Standard</option>
+            <option value="detailed" {% if settings.ai.note_length == 'detailed' %}selected{% endif %}>Detailed</option>
+            <option value="comprehensive" {% if settings.ai.note_length == 'comprehensive' %}selected{% endif %}>Comprehensive</option>
+          </select>
+          </label>
+          <label class="pipeline-field" for="ai-provider"><span>AI provider</span>
           <select id="ai-provider" name="ai_provider">
             {% for provider in ai_providers %}
             <option value="{{ provider.name }}" data-default-model="{{ provider.default_model }}" {% if provider.name == default_ai_provider %}selected{% endif %}>{{ provider.label }}</option>
             {% endfor %}
           </select>
-          <label class="field-label" for="ai-model">Model</label>
+          </label>
+          <label class="pipeline-field" for="ai-model"><span>Model</span>
           <select id="ai-model" name="ai_model" required>
             {% for provider in ai_providers if provider.name == default_ai_provider %}
             {% for model in provider.models %}
@@ -265,8 +315,16 @@
             {% endfor %}
             {% endfor %}
           </select>
+          </label>
           <button data-job-submit>Run Pipeline</button>
         </div>
+        </div>
+        <details id="ai-note-options" class="ai-note-options disabled">
+          <summary>AI note instructions</summary>
+          <label for="ai-custom-instructions">Custom instructions for this run</label>
+          <textarea id="ai-custom-instructions" name="ai_custom_instructions" rows="5" maxlength="6000" disabled placeholder="Optional: emphasize specific concepts, change the organization, or request a study style.">{{ settings.ai.custom_instructions }}</textarea>
+          <button type="button" class="secondary-button" data-reset-prompt="ai-custom-instructions">Reset to recommended</button>
+        </details>
         <div class="notebooklm-handoff">
           <a class="button-link" href="https://notebooklm.google.com/" target="_blank" rel="noreferrer">Open NotebookLM</a>
           <button type="submit" class="secondary-button" formaction="/notebooklm/reveal" formmethod="post" formnovalidate>Show source files</button>
@@ -337,11 +395,26 @@
 
     const aiNotesToggle = document.getElementById('ai-notes');
     const aiNoteFormat = document.getElementById('ai-note-format');
+    const aiNoteLength = document.getElementById('ai-note-length');
+    const aiCustomInstructions = document.getElementById('ai-custom-instructions');
+    const aiNoteOptions = document.getElementById('ai-note-options');
     function updateAiNoteFormat() {
-      aiNoteFormat.disabled = !aiNotesToggle.checked;
+      const disabled = !aiNotesToggle.checked;
+      aiNoteFormat.disabled = disabled;
+      aiNoteLength.disabled = disabled;
+      aiCustomInstructions.disabled = disabled;
+      aiNoteOptions.classList.toggle('disabled', disabled);
     }
     aiNotesToggle.addEventListener('change', updateAiNoteFormat);
     updateAiNoteFormat();
+
+    document.querySelectorAll('[data-reset-prompt]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const target = document.getElementById(button.dataset.resetPrompt);
+        target.value = '';
+        target.focus();
+      });
+    });
 
     function updateTopicSelectButton(folder) {
       const checkboxes = [...folder.querySelectorAll('input[name="lecture_ids"]')];
@@ -503,6 +576,107 @@
       setJobButtonsDisabled(true);
       pollJob(activeJobId);
     }
+
+    const updateBanner = document.getElementById('update-banner');
+    const updateTitle = document.getElementById('update-title');
+    const updateDetail = document.getElementById('update-detail');
+    const updateProgress = document.getElementById('update-progress');
+    const updateDownload = document.getElementById('update-download');
+    const updateInstall = document.getElementById('update-install');
+    const updateReleaseLink = document.getElementById('update-release-link');
+    const updateSettingsStatus = document.getElementById('update-settings-status');
+    const updateCheckNow = document.getElementById('update-check-now');
+    let updatePollTimer = null;
+    let autoInstallStarted = false;
+
+    async function requestUpdate(path, options = {}) {
+      const response = await fetch(path, { cache: 'no-store', ...options });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || 'The update request failed.');
+      return result;
+    }
+
+    function renderUpdate(update) {
+      window.clearTimeout(updatePollTimer);
+      updateDownload.hidden = true;
+      updateInstall.hidden = true;
+      updateProgress.hidden = true;
+      updateReleaseLink.hidden = !update.release_url;
+      if (update.release_url) updateReleaseLink.href = update.release_url;
+      updateSettingsStatus.textContent = `Version ${update.current_version || '{{ current_version }}'}`;
+
+      if (['disabled', 'current'].includes(update.status)) {
+        updateBanner.hidden = true;
+        if (update.status === 'current') updateSettingsStatus.textContent += ' is current';
+        return;
+      }
+      if (update.status === 'check_failed') {
+        updateBanner.hidden = true;
+        updateSettingsStatus.textContent += ' - update check unavailable';
+        return;
+      }
+      updateBanner.hidden = false;
+      if (update.status === 'available') {
+        updateTitle.textContent = `Canvas Lecture AI ${update.version} is available`;
+        updateDetail.textContent = 'Download the verified update when you are ready.';
+        updateDownload.hidden = false;
+      } else if (update.status === 'downloading') {
+        const percent = Number(update.progress_percent || 0);
+        updateTitle.textContent = `Downloading Canvas Lecture AI ${update.version}`;
+        updateDetail.textContent = `${percent}% complete`;
+        updateProgress.hidden = false;
+        updateProgress.value = percent;
+        updatePollTimer = window.setTimeout(checkForUpdates, 900);
+      } else if (update.status === 'downloaded') {
+        updateTitle.textContent = `Canvas Lecture AI ${update.version} is ready`;
+        updateDetail.textContent = 'Installation keeps the previous app as a rollback copy.';
+        updateInstall.hidden = false;
+        if (update.install_automatically && !activeJobId && !autoInstallStarted) {
+          autoInstallStarted = true;
+          installUpdate();
+        }
+      } else if (update.status === 'installing') {
+        updateTitle.textContent = 'Installing update';
+        updateDetail.textContent = 'The app will close and reopen automatically.';
+      } else if (update.status === 'failed') {
+        updateTitle.textContent = 'Update could not be downloaded';
+        updateDetail.textContent = update.error || 'Try again later.';
+        updateDownload.hidden = false;
+      }
+    }
+
+    async function checkForUpdates(force = false) {
+      try {
+        renderUpdate(await requestUpdate(`/updates/status${force ? '?force=true' : ''}`));
+      } catch (error) {
+        updateSettingsStatus.textContent = `Version {{ current_version }} - ${error.message}`;
+      }
+    }
+
+    async function installUpdate() {
+      updateInstall.disabled = true;
+      updateInstall.textContent = 'Preparing...';
+      try {
+        renderUpdate(await requestUpdate('/updates/install', { method: 'POST' }));
+      } catch (error) {
+        updateDetail.textContent = error.message;
+        updateInstall.disabled = false;
+        updateInstall.textContent = 'Install and restart';
+      }
+    }
+
+    updateDownload.addEventListener('click', async () => {
+      updateDownload.disabled = true;
+      try {
+        renderUpdate(await requestUpdate('/updates/download', { method: 'POST' }));
+      } catch (error) {
+        updateDetail.textContent = error.message;
+        updateDownload.disabled = false;
+      }
+    });
+    updateInstall.addEventListener('click', installUpdate);
+    updateCheckNow.addEventListener('click', () => checkForUpdates(true));
+    checkForUpdates();
   </script>
 </body>
 </html>

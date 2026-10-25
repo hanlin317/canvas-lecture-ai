@@ -36,7 +36,9 @@ class Echo360Client:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    async def discover_course(self, launch_url: str, diagnostic_output: Path | None = None) -> list[EchoRecording]:
+    async def discover_course(
+        self, launch_url: str, diagnostic_output: Path | None = None
+    ) -> list[EchoRecording]:
         payload = await self.inspect_launch(launch_url, diagnostic_output=diagnostic_output)
         return self.parse_browser_payload(payload)
 
@@ -60,11 +62,17 @@ class Echo360Client:
             async def on_response(response: Response) -> None:
                 if not re.search(r"echo360|echo", response.url, re.IGNORECASE):
                     return
-                entry = {"status": response.status, "url": response.url, "content_type": response.headers.get("content-type")}
+                entry = {
+                    "status": response.status,
+                    "url": response.url,
+                    "content_type": response.headers.get("content-type"),
+                }
                 try:
                     if "json" in (entry["content_type"] or ""):
                         body = await response.json()
-                        entry["json_keys"] = list(body.keys()) if isinstance(body, dict) else type(body).__name__
+                        entry["json_keys"] = (
+                            list(body.keys()) if isinstance(body, dict) else type(body).__name__
+                        )
                         entry["sample"] = body
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("Could not parse Echo360 response body for diagnostics: %s", exc)
@@ -75,7 +83,9 @@ class Echo360Client:
             try:
                 await page.goto(launch_url, wait_until="domcontentloaded", timeout=30_000)
             except PlaywrightTimeoutError:
-                logger.info("Echo360 launch kept loading after 30 seconds; inspecting the loaded page state.")
+                logger.info(
+                    "Echo360 launch kept loading after 30 seconds; inspecting the loaded page state."
+                )
             await page.wait_for_timeout(15_000)
             title = await page.title()
             links: list[dict] = []
@@ -103,7 +113,9 @@ class Echo360Client:
         }
         if diagnostic_output:
             diagnostic_output.parent.mkdir(parents=True, exist_ok=True)
-            diagnostic_output.write_text(json.dumps(_redact_diagnostic_value(payload), indent=2), encoding="utf-8")
+            diagnostic_output.write_text(
+                json.dumps(_redact_diagnostic_value(payload), indent=2), encoding="utf-8"
+            )
         return payload
 
     async def resolve_recording_assets(
@@ -131,7 +143,11 @@ class Echo360Client:
                 track_match = re.search(r"/s([01])q(\d+)\.mp4$", path, re.IGNORECASE)
                 if response.status in {200, 206} and track_match and "content.echo360" in url:
                     tracks.append((int(track_match.group(1)), int(track_match.group(2)), url))
-                if response.status == 200 and path.lower().endswith(".vtt") and "captions.echo360" in url:
+                if (
+                    response.status == 200
+                    and path.lower().endswith(".vtt")
+                    and "captions.echo360" in url
+                ):
                     transcript_urls.append(url)
                 media_match = re.search(r"/medias/([^/]+)/transcript", path, re.IGNORECASE)
                 if media_match:
@@ -141,7 +157,9 @@ class Echo360Client:
             try:
                 await page.goto(launch_url, wait_until="domcontentloaded", timeout=30_000)
             except PlaywrightTimeoutError:
-                logger.info("Echo360 course launch kept loading; continuing with available session state.")
+                logger.info(
+                    "Echo360 course launch kept loading; continuing with available session state."
+                )
             await self._wait_for_echo_frame(page)
             try:
                 await page.goto(recording_url, wait_until="domcontentloaded", timeout=30_000)
@@ -164,8 +182,14 @@ class Echo360Client:
                 if info_response.status == 200:
                     info = await info_response.json()
                     data = info.get("data") if isinstance(info, dict) else None
-                    presentation_file = data.get("presentationFile") if isinstance(data, dict) else None
-                    filename = presentation_file.get("fileName") if isinstance(presentation_file, dict) else None
+                    presentation_file = (
+                        data.get("presentationFile") if isinstance(data, dict) else None
+                    )
+                    filename = (
+                        presentation_file.get("fileName")
+                        if isinstance(presentation_file, dict)
+                        else None
+                    )
                     if filename:
                         slides_extension = Path(str(filename)).suffix.lower().lstrip(".") or "pdf"
                         slides_url = (
@@ -177,7 +201,11 @@ class Echo360Client:
             for url in urls:
                 cookies = await context.cookies(url)
                 if cookies:
-                    headers_by_url[url] = {"Cookie": "; ".join(f"{cookie['name']}={cookie['value']}" for cookie in cookies)}
+                    headers_by_url[url] = {
+                        "Cookie": "; ".join(
+                            f"{cookie['name']}={cookie['value']}" for cookie in cookies
+                        )
+                    }
             await browser.close()
         return ResolvedEchoAssets(
             video_url=video_url,
@@ -201,18 +229,25 @@ class Echo360Client:
             sample = response.get("sample")
             syllabus_recordings = self._parse_syllabus(sample, response.get("url"))
             if syllabus_recordings:
-                recordings.update({recording.source_id: recording for recording in syllabus_recordings})
+                recordings.update(
+                    {recording.source_id: recording for recording in syllabus_recordings}
+                )
                 continue
             if isinstance(sample, (dict, list)):
                 self._scan_json(sample, recordings, response.get("url"))
-        return sorted(recordings.values(), key=lambda item: (item.order, item.date or "", item.title))
+        return sorted(
+            recordings.values(), key=lambda item: (item.order, item.date or "", item.title)
+        )
 
     @staticmethod
     def _parse_syllabus(sample: object, source_url: str | None) -> list[EchoRecording]:
         if not isinstance(sample, dict) or not isinstance(sample.get("data"), list):
             return []
         groups = sample["data"]
-        if not any(isinstance(group, dict) and "groupInfo" in group and "lessons" in group for group in groups):
+        if not any(
+            isinstance(group, dict) and "groupInfo" in group and "lessons" in group
+            for group in groups
+        ):
             return []
 
         origin = ""
@@ -239,7 +274,9 @@ class Echo360Client:
                 title = str(lesson.get("displayName") or lesson.get("name") or f"Lecture {order}")
                 timing = lesson.get("timing") if isinstance(lesson.get("timing"), dict) else {}
                 date = timing.get("start") or lesson_container.get("startTimeUTC")
-                recording_url = f"{origin}/lesson/{lesson_id}/classroom" if origin else str(source_url or "")
+                recording_url = (
+                    f"{origin}/lesson/{lesson_id}/classroom" if origin else str(source_url or "")
+                )
                 recordings.append(
                     EchoRecording(
                         source_id=lesson_id,
@@ -263,7 +300,9 @@ class Echo360Client:
                 )
         return recordings
 
-    def _scan_json(self, value: object, recordings: dict[str, EchoRecording], source_url: str | None) -> None:
+    def _scan_json(
+        self, value: object, recordings: dict[str, EchoRecording], source_url: str | None
+    ) -> None:
         if isinstance(value, list):
             for item in value:
                 self._scan_json(item, recordings, source_url)
@@ -283,16 +322,25 @@ class Echo360Client:
                     title=str(title),
                     url=str(url),
                     date=value.get("date") or value.get("startTime") or value.get("createdAt"),
-                    duration_seconds=value.get("duration") if isinstance(value.get("duration"), int) else None,
+                    duration_seconds=value.get("duration")
+                    if isinstance(value.get("duration"), int)
+                    else None,
                 ),
             )
             for candidate in ("videoUrl", "downloadUrl", "mediaUrl", "playbackUrl"):
                 if value.get(candidate):
-                    recording.videos.append(EchoVideoAsset(url=str(value[candidate]), quality=str(value.get("quality") or "unknown")))
+                    recording.videos.append(
+                        EchoVideoAsset(
+                            url=str(value[candidate]),
+                            quality=str(value.get("quality") or "unknown"),
+                        )
+                    )
             for candidate in ("transcriptUrl", "vttUrl", "captionUrl"):
                 if value.get(candidate):
                     fmt = "vtt" if str(value[candidate]).lower().endswith(".vtt") else "txt"
-                    recording.transcripts.append(EchoTranscriptAsset(url=str(value[candidate]), format=fmt))
+                    recording.transcripts.append(
+                        EchoTranscriptAsset(url=str(value[candidate]), format=fmt)
+                    )
 
         for child in value.values():
             self._scan_json(child, recordings, source_url)

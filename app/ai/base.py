@@ -10,6 +10,7 @@ class AIRequest:
     user_prompt: str
     model: str
     temperature: float = 0.2
+    max_output_tokens: int = 4096
 
 
 class AIProvider(ABC):

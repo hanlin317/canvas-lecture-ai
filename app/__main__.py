@@ -86,14 +86,27 @@ def main() -> None:
                 raise SystemExit(f"Unknown topic: {args.topic}")
             topic_id = topics[0].id
         lectures = db.list_lectures(course.id or 0, topic_id=topic_id)
-        options = PipelineOptions(ai_notes=args.ai_notes, save_obsidian=args.save_obsidian, overwrite=args.overwrite, skip_existing=not args.overwrite)
-        result = asyncio.run(PipelineService(db, settings).run_many([lecture.id or 0 for lecture in lectures], options))
+        options = PipelineOptions(
+            ai_notes=args.ai_notes,
+            save_obsidian=args.save_obsidian,
+            overwrite=args.overwrite,
+            skip_existing=not args.overwrite,
+        )
+        result = asyncio.run(
+            PipelineService(db, settings).run_many(
+                [lecture.id or 0 for lecture in lectures], options
+            )
+        )
         print(json.dumps(result, indent=2))
     elif args.cmd == "diagnose-canvas":
         path = asyncio.run(CanvasClient(settings).capture_browser_diagnostics(Path(args.output)))
         print(path)
     elif args.cmd == "self-check":
         module = importlib.import_module("mlx_whisper")
+        document_modules = {
+            name: bool(importlib.import_module(name))
+            for name in ("docx", "markdown_it", "reportlab")
+        }
         output = Path(args.output).expanduser()
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(
@@ -101,6 +114,7 @@ def main() -> None:
                 {
                     "status": "ok",
                     "mlx_whisper": bool(getattr(module, "transcribe", None)),
+                    "document_exporters": document_modules,
                     "ffmpeg": os.environ.get("DLM_FFMPEG", ""),
                     "playwright_browsers": os.environ.get("PLAYWRIGHT_BROWSERS_PATH", ""),
                 },

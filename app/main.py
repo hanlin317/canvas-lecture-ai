@@ -15,9 +15,13 @@ def create_app() -> FastAPI:
     settings = load_settings()
     configure_logging(Path(settings.app.log_path).expanduser())
     Database(settings.database_path)
-    app = FastAPI(title="Dental Lecture Manager")
+    app = FastAPI(title="Canvas Lecture AI")
     app.include_router(router)
-    app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "web" / "static")), name="static")
+    app.mount(
+        "/static",
+        StaticFiles(directory=str(Path(__file__).parent / "web" / "static")),
+        name="static",
+    )
     return app
 
 

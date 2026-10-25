@@ -1,17 +1,30 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import json
 import logging
+import os
+import plistlib
+import shlex
+import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
 from uuid import uuid4
 
+import httpx
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from packaging.version import InvalidVersion, Version
 
+from app import __version__
 from app.ai.factory import (
     AI_PROVIDER_SPECS,
     api_key_status,
@@ -19,6 +32,7 @@ from app.ai.factory import (
     get_ai_provider_spec,
     save_api_key,
 )
+from app.ai.prompts import NOTE_LENGTHS
 from app.canvas.client import CanvasClient
 from app.config import Settings, load_settings, save_web_settings
 from app.database import Database
@@ -32,13 +46,22 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 router = APIRouter()
 logger = logging.getLogger(__name__)
 ACTIVE_JOBS: dict[str, asyncio.Task] = {}
+UPDATE_PUBLIC_KEY_B64 = "/u/PyTFPDYT02PQQRIsNDXMLzvcFWgutkZvPKm/p1UI="
+UPDATE_STATE: dict[str, object] = {"status": "idle", "progress_percent": 0}
+UPDATE_TASK: asyncio.Task | None = None
+
+
+def get_settings() -> Settings:
+    return load_settings()
 
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def update_job_progress(db: Database, job_id: str, message: str, completed: int, total: int) -> None:
+def update_job_progress(
+    db: Database, job_id: str, message: str, completed: int, total: int
+) -> None:
     db.update_job(
         job_id,
         current_step=message,
@@ -68,6 +91,346 @@ def validated_ai_model(provider_name: str, model: str, db: Database) -> str:
     return selected
 
 
+def _updates_dir() -> Path:
+    path = expand_path("local_data/updates")
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _update_cache_path() -> Path:
+    return _updates_dir() / "2026-10-25-update-status.json"
+
+
+def _read_update_cache(max_age_seconds: int = 86400) -> dict | None:
+    path = _update_cache_path()
+    if not path.exists() or time.time() - path.stat().st_mtime > max_age_seconds:
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_update_cache(payload: dict) -> None:
+    path = _update_cache_path()
+    temporary = path.with_suffix(".json.part")
+    temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _verify_update_manifest(manifest_bytes: bytes, signature_bytes: bytes) -> dict:
+    try:
+        public_key = Ed25519PublicKey.from_public_bytes(
+            base64.b64decode(UPDATE_PUBLIC_KEY_B64, validate=True)
+        )
+        public_key.verify(signature_bytes, manifest_bytes)
+    except (InvalidSignature, ValueError) as exc:
+        raise RuntimeError("The update manifest signature is invalid.") from exc
+    try:
+        manifest = json.loads(manifest_bytes)
+        Version(str(manifest["version"]))
+        if not all(manifest.get(key) for key in ("dmg_url", "sha256", "app_name")):
+            raise ValueError("Update manifest is incomplete.")
+    except (KeyError, InvalidVersion, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("The signed update manifest is malformed.") from exc
+    return manifest
+
+
+async def _fetch_signed_update_manifest(settings: Settings, *, force: bool = False) -> dict:
+    if not force:
+        cached = _read_update_cache()
+        if cached:
+            return cached
+    repository = settings.updates.repository
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": f"Canvas-Lecture-AI/{__version__}",
+    }
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers=headers) as client:
+        release_response = await client.get(
+            f"https://api.github.com/repos/{repository}/releases/latest"
+        )
+        release_response.raise_for_status()
+        release = release_response.json()
+        assets = {asset.get("name"): asset for asset in release.get("assets", [])}
+        manifest_asset = next(
+            (asset for name, asset in assets.items() if str(name).endswith("-update.json")),
+            None,
+        )
+        signature_asset = next(
+            (asset for name, asset in assets.items() if str(name).endswith("-update.json.sig")),
+            None,
+        )
+        if not manifest_asset or not signature_asset:
+            raise RuntimeError("The latest release does not contain a signed update manifest.")
+        manifest_response, signature_response = await asyncio.gather(
+            client.get(manifest_asset["browser_download_url"]),
+            client.get(signature_asset["browser_download_url"]),
+        )
+        manifest_response.raise_for_status()
+        signature_response.raise_for_status()
+
+    manifest = _verify_update_manifest(manifest_response.content, signature_response.content)
+    latest = Version(str(manifest["version"]))
+    current = Version(__version__)
+    payload = {
+        **manifest,
+        "current_version": __version__,
+        "available": latest > current,
+        "release_url": manifest.get("release_url") or release.get("html_url", ""),
+        "checked_at": utc_now(),
+    }
+    _write_update_cache(payload)
+    return payload
+
+
+async def _download_update(manifest: dict) -> None:
+    global UPDATE_STATE
+    version = str(manifest["version"])
+    destination = _updates_dir() / f"Canvas-Lecture-AI-v{version}-arm64.dmg"
+    temporary = destination.with_suffix(".dmg.part")
+    expected_size = int(manifest.get("size") or 0)
+    downloaded = 0
+    digest = hashlib.sha256()
+    UPDATE_STATE = {
+        **manifest,
+        "status": "downloading",
+        "progress_percent": 0,
+    }
+    try:
+        async with (
+            httpx.AsyncClient(timeout=None, follow_redirects=True) as client,
+            client.stream("GET", str(manifest["dmg_url"])) as response,
+        ):
+            response.raise_for_status()
+            total = expected_size or int(response.headers.get("content-length") or 0)
+            with temporary.open("wb") as handle:
+                async for chunk in response.aiter_bytes(1024 * 1024):
+                    handle.write(chunk)
+                    digest.update(chunk)
+                    downloaded += len(chunk)
+                    UPDATE_STATE["progress_percent"] = (
+                        round(downloaded * 100 / total) if total else 0
+                    )
+        if digest.hexdigest().lower() != str(manifest["sha256"]).lower():
+            raise RuntimeError("Downloaded update checksum did not match the signed manifest.")
+        temporary.replace(destination)
+        UPDATE_STATE = {
+            **manifest,
+            "status": "downloaded",
+            "progress_percent": 100,
+            "download_path": str(destination),
+        }
+    except (httpx.HTTPError, OSError, RuntimeError) as exc:
+        logger.exception("Update download failed")
+        UPDATE_STATE = {
+            **manifest,
+            "status": "failed",
+            "progress_percent": 0,
+            "error": str(exc),
+        }
+
+
+def _current_app_path() -> Path | None:
+    if not getattr(sys, "frozen", False):
+        return None
+    executable = Path(sys.executable).resolve()
+    return executable.parents[2] if len(executable.parents) >= 3 else None
+
+
+def _mount_and_validate_update(dmg_path: Path, manifest: dict) -> None:
+    mount_dir = _updates_dir() / f"2026-10-25-update-mount-{os.getpid()}"
+    mount_dir.mkdir(parents=True, exist_ok=False)
+    attached = False
+    try:
+        subprocess.run(
+            [
+                "hdiutil",
+                "attach",
+                "-nobrowse",
+                "-readonly",
+                "-mountpoint",
+                str(mount_dir),
+                str(dmg_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        attached = True
+        candidate = mount_dir / str(manifest["app_name"])
+        if not candidate.is_dir():
+            raise RuntimeError("The update DMG does not contain the expected application.")
+        subprocess.run(
+            ["codesign", "--verify", "--deep", "--strict", str(candidate)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        with (candidate / "Contents" / "Info.plist").open("rb") as handle:
+            info = plistlib.load(handle)
+        if info.get("CFBundleIdentifier") != "com.hanlin317.dentallecturemanager":
+            raise RuntimeError("The update has an unexpected application identity.")
+        if Version(str(info.get("CFBundleShortVersionString"))) != Version(
+            str(manifest["version"])
+        ):
+            raise RuntimeError("The application version does not match the signed manifest.")
+    finally:
+        if attached:
+            subprocess.run(
+                ["hdiutil", "detach", str(mount_dir)],
+                check=False,
+                capture_output=True,
+            )
+
+
+def _write_update_installer(dmg_path: Path, manifest: dict, current_app: Path) -> Path:
+    version = str(manifest["version"])
+    destination = current_app.parent / str(manifest["app_name"])
+    backup = current_app.parent / f"{current_app.name}.previous-v{__version__}"
+    script = _updates_dir() / f"2026-10-25-install-v{version}.sh"
+    values = {
+        "DMG": dmg_path,
+        "CURRENT": current_app,
+        "DESTINATION": destination,
+        "BACKUP": backup,
+        "APP_NAME": str(manifest["app_name"]),
+        "PID_TO_STOP": os.getpid(),
+    }
+    assignments = "\n".join(f"{key}={shlex.quote(str(value))}" for key, value in values.items())
+    script.write_text(
+        f"""#!/bin/zsh
+set -euo pipefail
+{assignments}
+sleep 1
+kill -TERM "$PID_TO_STOP" 2>/dev/null || true
+for attempt in {{1..80}}; do
+  kill -0 "$PID_TO_STOP" 2>/dev/null || break
+  sleep 0.25
+done
+if [[ -e "$BACKUP" ]]; then
+  BACKUP="$BACKUP-$(date +%Y%m%d%H%M%S)"
+fi
+if [[ "$DESTINATION" != "$CURRENT" && -e "$DESTINATION" ]]; then
+  exit 3
+fi
+MOUNT_DIR=$(mktemp -d /tmp/2026-10-25-canvas-lecture-ai-update.XXXXXX)
+hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT_DIR" "$DMG" >/dev/null
+SOURCE="$MOUNT_DIR/$APP_NAME"
+mv "$CURRENT" "$BACKUP"
+if ditto "$SOURCE" "$DESTINATION" && codesign --verify --deep --strict "$DESTINATION"; then
+  hdiutil detach "$MOUNT_DIR" >/dev/null || true
+  open "$DESTINATION"
+  exit 0
+fi
+if [[ ! -e "$CURRENT" ]]; then mv "$BACKUP" "$CURRENT"; fi
+hdiutil detach "$MOUNT_DIR" >/dev/null || true
+open "$CURRENT"
+exit 4
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o700)
+    return script
+
+
+async def _launch_update_installer(script: Path, needs_authorization: bool) -> None:
+    await asyncio.sleep(1)
+    if needs_authorization:
+        command = shlex.quote(str(script))
+        await asyncio.to_thread(
+            subprocess.Popen,
+            [
+                "osascript",
+                "-e",
+                f"do shell script {json.dumps(command)} with administrator privileges",
+            ],
+            start_new_session=True,
+        )
+    else:
+        await asyncio.to_thread(subprocess.Popen, [str(script)], start_new_session=True)
+
+
+@router.get("/updates/status")
+async def update_status(
+    force: bool = False,
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    global UPDATE_TASK, UPDATE_STATE
+    preferences = {
+        "check_automatically": settings.updates.check_automatically,
+        "download_automatically": settings.updates.download_automatically,
+        "install_automatically": settings.updates.install_automatically,
+    }
+    if not force and not settings.updates.check_automatically:
+        return {
+            "status": "disabled",
+            "current_version": __version__,
+            **preferences,
+        }
+    if UPDATE_STATE.get("status") in {"downloading", "downloaded", "installing", "failed"}:
+        return {**UPDATE_STATE, **preferences}
+    try:
+        manifest = await _fetch_signed_update_manifest(settings, force=force)
+    except (httpx.HTTPError, OSError, RuntimeError) as exc:
+        logger.warning("Update check failed: %s", exc)
+        return {
+            "status": "check_failed",
+            "current_version": __version__,
+            "error": str(exc),
+            **preferences,
+        }
+    UPDATE_STATE = {
+        **manifest,
+        "status": "available" if manifest["available"] else "current",
+        "progress_percent": 0,
+    }
+    if manifest["available"] and settings.updates.download_automatically:
+        UPDATE_TASK = asyncio.create_task(_download_update(manifest))
+        UPDATE_STATE["status"] = "downloading"
+    return {**UPDATE_STATE, **preferences}
+
+
+@router.post("/updates/download")
+async def download_update(settings: Settings = Depends(get_settings)) -> dict:
+    global UPDATE_TASK, UPDATE_STATE
+    if UPDATE_TASK and not UPDATE_TASK.done():
+        return UPDATE_STATE
+    manifest = await _fetch_signed_update_manifest(settings, force=True)
+    if not manifest["available"]:
+        return {**manifest, "status": "current", "progress_percent": 100}
+    UPDATE_STATE = {**manifest, "status": "downloading", "progress_percent": 0}
+    UPDATE_TASK = asyncio.create_task(_download_update(manifest))
+    return UPDATE_STATE
+
+
+@router.post("/updates/install")
+async def install_update() -> dict:
+    if UPDATE_STATE.get("status") != "downloaded":
+        raise HTTPException(status_code=409, detail="Download the update before installing it.")
+    current_app = _current_app_path()
+    if current_app is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Automatic installation is available only in the packaged macOS app.",
+        )
+    dmg_path = Path(str(UPDATE_STATE.get("download_path") or ""))
+    if not dmg_path.is_file():
+        raise HTTPException(status_code=409, detail="The downloaded update could not be found.")
+    try:
+        await asyncio.to_thread(_mount_and_validate_update, dmg_path, UPDATE_STATE)
+        installer = _write_update_installer(dmg_path, UPDATE_STATE, current_app)
+    except (OSError, RuntimeError, subprocess.SubprocessError, InvalidVersion) as exc:
+        logger.exception("Could not prepare app update")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    UPDATE_STATE["status"] = "installing"
+    needs_authorization = not os.access(current_app.parent, os.W_OK)
+    asyncio.create_task(_launch_update_installer(installer, needs_authorization))
+    return {"status": "installing", "version": UPDATE_STATE["version"]}
+
+
 def mark_job_cancelled(db: Database, job_id: str) -> None:
     finished_at = utc_now()
     db.update_job(
@@ -80,7 +443,9 @@ def mark_job_cancelled(db: Database, job_id: str) -> None:
     )
 
 
-async def run_discovery_job(job_id: str, course_code: str, settings: Settings, db: Database) -> None:
+async def run_discovery_job(
+    job_id: str, course_code: str, settings: Settings, db: Database
+) -> None:
     task = asyncio.current_task()
     if task is not None:
         ACTIVE_JOBS[job_id] = task
@@ -99,9 +464,7 @@ async def run_discovery_job(job_id: str, course_code: str, settings: Settings, d
         )
         discovered_course = result.get("course")
         display_code = discovered_course.code if discovered_course else course_code
-        message = (
-            f"Discovery finished for {display_code}: {result['recordings']} recording(s)."
-        )
+        message = f"Discovery finished for {display_code}: {result['recordings']} recording(s)."
         finished_at = utc_now()
         db.update_job(
             job_id,
@@ -218,10 +581,6 @@ def format_lecture_date(value: str | None) -> str:
 templates.env.filters["lecture_date"] = format_lecture_date
 
 
-def get_settings() -> Settings:
-    return load_settings()
-
-
 def get_db(settings: Settings = Depends(get_settings)) -> Database:
     return Database(settings.database_path)
 
@@ -235,7 +594,11 @@ def selected_course_from_request(courses, request: Request):
     requested = request.query_params.get("course")
     if requested:
         for course in courses:
-            if str(course.id) == requested or course.canvas_id == requested or course.code == requested:
+            if (
+                str(course.id) == requested
+                or course.canvas_id == requested
+                or course.code == requested
+            ):
                 return course
     return courses[0] if courses else None
 
@@ -337,12 +700,20 @@ async def choose_directory(prompt: str) -> str | None:
 
 
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request, settings: Settings = Depends(get_settings), db: Database = Depends(get_db)) -> HTMLResponse:
+async def index(
+    request: Request, settings: Settings = Depends(get_settings), db: Database = Depends(get_db)
+) -> HTMLResponse:
     courses = db.list_courses()
     selected_course = selected_course_from_request(courses, request)
     topics = db.list_topics(selected_course.id) if selected_course and selected_course.id else []
-    lectures = db.list_lectures(selected_course.id) if selected_course and selected_course.id else []
-    recent_processing = db.list_recent_processing(selected_course.id) if selected_course and selected_course.id else []
+    lectures = (
+        db.list_lectures(selected_course.id) if selected_course and selected_course.id else []
+    )
+    recent_processing = (
+        db.list_recent_processing(selected_course.id)
+        if selected_course and selected_course.id
+        else []
+    )
     processing_groups = grouped_processing_for_display(recent_processing)
     lectures_by_topic: dict[int | None, list] = {}
     for lecture in lectures:
@@ -356,7 +727,9 @@ async def index(request: Request, settings: Settings = Depends(get_settings), db
         lecture_groups.append({"topic": None, "lectures": lectures_by_topic[None]})
     canvas = CanvasClient(settings)
     canvas_session_status = "saved" if canvas.has_session() else "not saved"
-    setup_complete = bool(settings.canvas.base_url and Path(settings.paths.download_root).expanduser().is_dir())
+    setup_complete = bool(
+        settings.canvas.base_url and Path(settings.paths.download_root).expanduser().is_dir()
+    )
     ai_providers = []
     for spec in AI_PROVIDER_SPECS:
         models, refreshed_at = provider_models_for_display(spec.name, db)
@@ -381,7 +754,9 @@ async def index(request: Request, settings: Settings = Depends(get_settings), db
     except ValueError:
         configured_provider = AI_PROVIDER_SPECS[0]
     configured_models = next(
-        provider["models"] for provider in ai_providers if provider["name"] == configured_provider.name
+        provider["models"]
+        for provider in ai_providers
+        if provider["name"] == configured_provider.name
     )
     default_ai_model = (
         settings.ai.model
@@ -421,6 +796,7 @@ async def index(request: Request, settings: Settings = Depends(get_settings), db
             "message": request.query_params.get("message"),
             "error": request.query_params.get("error"),
             "job_id": request.query_params.get("job"),
+            "current_version": __version__,
             "whisper_available": mlx_whisper_available(settings.transcripts.whisper_command),
             "env": {
                 "OPENAI_API_KEY": bool(__import__("os").environ.get("OPENAI_API_KEY")),
@@ -453,7 +829,9 @@ async def update_api_key(
     except Exception as exc:
         logger.exception("Could not save AI provider key")
         return redirect_home(error=str(exc), course=course_code)
-    return redirect_home(message=f"{spec.label} API key saved in macOS Keychain.", course=course_code)
+    return redirect_home(
+        message=f"{spec.label} API key saved in macOS Keychain.", course=course_code
+    )
 
 
 @router.post("/settings/app")
@@ -464,6 +842,11 @@ async def update_app_settings(
     obsidian_vault: str = Form(default=""),
     ai_provider: str = Form(default="openai"),
     ai_model: str = Form(default=""),
+    ai_note_length: str = Form(default="standard"),
+    ai_custom_instructions: str = Form(default=""),
+    updates_check_automatically: bool = Form(default=False),
+    updates_download_automatically: bool = Form(default=False),
+    updates_install_automatically: bool = Form(default=False),
     whisper_enabled: bool = Form(default=False),
     whisper_model: str = Form(default=""),
     course_code: str = Form(default=""),
@@ -475,6 +858,11 @@ async def update_app_settings(
         whisper = whisper_model.strip()
         if whisper_enabled and not whisper:
             raise ValueError("Whisper model is required when Whisper is enabled.")
+        if ai_note_length not in NOTE_LENGTHS:
+            raise ValueError("Unknown default AI note length.")
+        custom_instructions = ai_custom_instructions.strip()
+        if len(custom_instructions) > 6000:
+            raise ValueError("Custom AI instructions must be 6,000 characters or fewer.")
         save_web_settings(
             {
                 "canvas.base_url": validated_canvas_url(canvas_base_url),
@@ -489,10 +877,13 @@ async def update_app_settings(
                 ),
                 "ai.provider": provider.name,
                 "ai.model": model,
+                "ai.note_length": ai_note_length,
+                "ai.custom_instructions": custom_instructions,
+                "updates.check_automatically": updates_check_automatically,
+                "updates.download_automatically": updates_download_automatically,
+                "updates.install_automatically": updates_install_automatically,
                 "transcripts.whisper_enabled": whisper_enabled,
-                "transcripts.whisper_model": (
-                    whisper or "mlx-community/whisper-large-v3-turbo-q4"
-                ),
+                "transcripts.whisper_model": (whisper or "mlx-community/whisper-large-v3-turbo-q4"),
             }
         )
     except Exception as exc:
@@ -561,12 +952,16 @@ async def reveal_notebooklm_sources(
         )
     process = await asyncio.create_subprocess_exec("open", str(path))
     if await process.wait() != 0:
-        return redirect_home(error="Could not open the NotebookLM sources folder.", course=course_code)
+        return redirect_home(
+            error="Could not open the NotebookLM sources folder.", course=course_code
+        )
     return redirect_home(message="Opened the NotebookLM sources folder.", course=course_code)
 
 
 @router.post("/courses/sync")
-async def sync_courses(settings: Settings = Depends(get_settings), db: Database = Depends(get_db)) -> RedirectResponse:
+async def sync_courses(
+    settings: Settings = Depends(get_settings), db: Database = Depends(get_db)
+) -> RedirectResponse:
     try:
         courses = await DiscoveryService(db, settings).sync_canvas_courses()
     except Exception as exc:
@@ -589,7 +984,9 @@ async def group_courses(
     try:
         spec = get_ai_provider_spec(provider)
         selected_model = validated_ai_model(spec.name, model, db)
-        grouped = await DiscoveryService(db, settings).group_courses_with_ai(spec.name, selected_model)
+        grouped = await DiscoveryService(db, settings).group_courses_with_ai(
+            spec.name, selected_model
+        )
     except Exception as exc:
         logger.exception("AI course grouping failed")
         return redirect_home(error=str(exc), course=course)
@@ -634,6 +1031,8 @@ async def pipeline(
     notebooklm: bool = Form(default=False),
     ai_notes: bool = Form(default=False),
     ai_note_format: str = Form(default="markdown"),
+    ai_note_length: str = Form(default="standard"),
+    ai_custom_instructions: str = Form(default=""),
     save_obsidian: bool = Form(default=False),
     whisper_fallback: bool = Form(default=False),
     overwrite: bool = Form(default=False),
@@ -644,12 +1043,19 @@ async def pipeline(
     db: Database = Depends(get_db),
 ) -> RedirectResponse:
     if not lecture_ids:
-        return redirect_home(error="Select at least one lecture before running the pipeline.", course=course_code)
+        return redirect_home(
+            error="Select at least one lecture before running the pipeline.", course=course_code
+        )
     try:
         provider_spec = get_ai_provider_spec(ai_provider)
         selected_model = validated_ai_model(provider_spec.name, ai_model, db)
         if ai_note_format not in {"markdown", "pdf", "docx"}:
             raise ValueError(f"Unknown AI note format: {ai_note_format}")
+        if ai_note_length not in NOTE_LENGTHS:
+            raise ValueError(f"Unknown AI note length: {ai_note_length}")
+        custom_instructions = ai_custom_instructions.strip()
+        if len(custom_instructions) > 6000:
+            raise ValueError("Custom AI instructions must be 6,000 characters or fewer.")
     except ValueError as exc:
         return redirect_home(error=str(exc), course=course_code)
     settings.ai.provider = provider_spec.name
@@ -661,6 +1067,8 @@ async def pipeline(
         notebooklm=notebooklm,
         ai_notes=ai_notes,
         ai_note_format=ai_note_format,
+        ai_note_length=ai_note_length,
+        ai_custom_instructions=custom_instructions,
         save_obsidian=save_obsidian,
         whisper_fallback=whisper_fallback,
         overwrite=overwrite,
@@ -690,7 +1098,9 @@ async def job_status(job_id: str, db: Database = Depends(get_db)) -> dict:
     payload["progress_percent"] = round(100 * job.completed_steps / max(1, job.total_steps))
     payload["eta_seconds"] = None
     if job.status == "running" and job.started_at and 0 < job.completed_steps < job.total_steps:
-        elapsed = max(0.0, (datetime.now(UTC) - datetime.fromisoformat(job.started_at)).total_seconds())
+        elapsed = max(
+            0.0, (datetime.now(UTC) - datetime.fromisoformat(job.started_at)).total_seconds()
+        )
         payload["eta_seconds"] = round(
             elapsed * (job.total_steps - job.completed_steps) / job.completed_steps
         )

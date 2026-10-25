@@ -7,13 +7,14 @@ import shutil
 import sys
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from app.utils import expand_path
 
-APP_SUPPORT_NAME = "Dental Lecture Manager"
+APP_SUPPORT_NAME = "Canvas Lecture AI"
+LEGACY_APP_SUPPORT_NAME = "Dental Lecture Manager"
 
 
 class AppConfig(BaseModel):
@@ -59,7 +60,16 @@ class AIConfig(BaseModel):
     model: str = "gpt-4.1"
     temperature: float = 0.2
     auto_save_notes: bool = False
-    prompt_version: str = "1.0"
+    prompt_version: str = "2.0"
+    note_length: Literal["concise", "standard", "detailed", "comprehensive"] = "standard"
+    custom_instructions: str = ""
+
+
+class UpdatesConfig(BaseModel):
+    check_automatically: bool = True
+    download_automatically: bool = False
+    install_automatically: bool = False
+    repository: str = "hanlin317/canvas-lecture-ai"
 
 
 class Settings(BaseModel):
@@ -69,6 +79,7 @@ class Settings(BaseModel):
     downloads: DownloadsConfig = Field(default_factory=DownloadsConfig)
     transcripts: TranscriptsConfig = Field(default_factory=TranscriptsConfig)
     ai: AIConfig = Field(default_factory=AIConfig)
+    updates: UpdatesConfig = Field(default_factory=UpdatesConfig)
 
     @property
     def database_path(self) -> Path:
@@ -107,7 +118,10 @@ def application_support_dir() -> Path:
     override = os.environ.get("DLM_DATA_DIR")
     if override:
         return Path(override).expanduser()
-    return Path.home() / "Library" / "Application Support" / APP_SUPPORT_NAME
+    parent = Path.home() / "Library" / "Application Support"
+    preferred = parent / APP_SUPPORT_NAME
+    legacy = parent / LEGACY_APP_SUPPORT_NAME
+    return legacy if legacy.exists() and not preferred.exists() else preferred
 
 
 def bundled_resource(name: str) -> Path:
@@ -123,9 +137,7 @@ def prepare_runtime_environment() -> Path | None:
     data_dir = application_support_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("DLM_CONFIG", str(data_dir / "config.toml"))
-    os.environ.setdefault(
-        "PLAYWRIGHT_BROWSERS_PATH", str(bundled_resource("playwright-browsers"))
-    )
+    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(bundled_resource("playwright-browsers")))
     os.environ.setdefault("HF_HOME", str(data_dir / "models" / "huggingface"))
 
     config_path = settings_path()
@@ -153,8 +165,13 @@ def save_web_settings(values: dict[str, Any], path: str | Path | None = None) ->
         "paths.obsidian_vault",
         "ai.provider",
         "ai.model",
+        "ai.note_length",
+        "ai.custom_instructions",
         "transcripts.whisper_enabled",
         "transcripts.whisper_model",
+        "updates.check_automatically",
+        "updates.download_automatically",
+        "updates.install_automatically",
     }
     unknown = set(values) - allowed
     if unknown:

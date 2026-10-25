@@ -24,7 +24,7 @@ def ffmpeg_executable() -> str:
         return get_ffmpeg_exe()
     except (ImportError, RuntimeError) as exc:
         raise RuntimeError(
-            "FFmpeg is unavailable. Install FFmpeg or reinstall Dental Lecture Manager."
+            "FFmpeg is unavailable. Install FFmpeg or reinstall Canvas Lecture AI."
         ) from exc
 
 
@@ -48,9 +48,10 @@ class DownloadManager:
             last_error: Exception | None = None
             for attempt in range(self.retries + 1):
                 try:
-                    async with httpx.AsyncClient(follow_redirects=True, timeout=None) as client, client.stream(
-                        "GET", url, headers=headers
-                    ) as response:
+                    async with (
+                        httpx.AsyncClient(follow_redirects=True, timeout=None) as client,
+                        client.stream("GET", url, headers=headers) as response,
+                    ):
                         response.raise_for_status()
                         with tmp.open("wb") as handle:
                             async for chunk in response.aiter_bytes(1024 * 1024):

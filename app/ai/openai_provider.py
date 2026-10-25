@@ -15,7 +15,9 @@ class OpenAIProvider(AIProvider):
         try:
             from openai import AsyncOpenAI
         except ImportError as exc:
-            raise RuntimeError("Install the ai extra to use OpenAI: pip install -e '.[ai]'") from exc
+            raise RuntimeError(
+                "Install the ai extra to use OpenAI: pip install -e '.[ai]'"
+            ) from exc
         api_key = self.api_key or os.environ.get("OPENAI_API_KEY")
         if not api_key:
             raise RuntimeError("No OpenAI API key is configured.")
@@ -23,6 +25,7 @@ class OpenAIProvider(AIProvider):
         response = await client.chat.completions.create(
             model=request.model,
             temperature=request.temperature,
+            max_completion_tokens=request.max_output_tokens,
             messages=[
                 {"role": "system", "content": request.system_prompt},
                 {"role": "user", "content": request.user_prompt},
@@ -46,6 +49,7 @@ class OpenAICompatibleProvider(AIProvider):
         response = await client.chat.completions.create(
             model=request.model,
             temperature=request.temperature,
+            max_tokens=request.max_output_tokens,
             messages=[
                 {"role": "system", "content": request.system_prompt},
                 {"role": "user", "content": request.user_prompt},

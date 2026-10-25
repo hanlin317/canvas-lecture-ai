@@ -20,6 +20,8 @@ datas = [
 ]
 datas += collect_data_files("mlx_whisper")
 datas += collect_data_files("mlx", includes=["lib/mlx.metallib"])
+datas += collect_data_files("docx")
+datas += collect_data_files("reportlab", includes=["fonts/*.ttf"])
 
 hiddenimports = collect_submodules("openai") + collect_submodules(
     "mlx_whisper", filter=lambda name: name != "mlx_whisper.torch_whisper"
@@ -52,7 +54,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Dental Lecture Manager",
+    name="Canvas Lecture AI",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -67,17 +69,17 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="Dental Lecture Manager",
+    name="Canvas Lecture AI",
 )
 
 app = BUNDLE(
     coll,
-    name="Dental Lecture Manager.app",
+    name="Canvas Lecture AI.app",
     bundle_identifier="com.hanlin317.dentallecturemanager",
     info_plist={
-        "CFBundleDisplayName": "Dental Lecture Manager",
-        "CFBundleShortVersionString": "0.2.0",
-        "CFBundleVersion": "2",
+        "CFBundleDisplayName": "Canvas Lecture AI",
+        "CFBundleShortVersionString": "0.3.0",
+        "CFBundleVersion": "3",
         "LSMinimumSystemVersion": "14.0",
         "NSHighResolutionCapable": True,
     },

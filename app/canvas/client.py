@@ -51,7 +51,9 @@ class CanvasClient:
         consecutive_matches = 0
         while asyncio.get_running_loop().time() < deadline:
             if page.is_closed():
-                raise CanvasAuthError("Canvas login window was closed before authentication completed.")
+                raise CanvasAuthError(
+                    "Canvas login window was closed before authentication completed."
+                )
             try:
                 body_text = await page.locator("body").inner_text(timeout=2_000)
                 authenticated = self._is_authenticated_page(page.url, body_text)
@@ -61,7 +63,9 @@ class CanvasClient:
             if consecutive_matches >= 2:
                 return
             await page.wait_for_timeout(1_000)
-        raise CanvasAuthError("Canvas login timed out. Complete university login and MFA, then try again.")
+        raise CanvasAuthError(
+            "Canvas login timed out. Complete university login and MFA, then try again."
+        )
 
     async def login(self) -> None:
         if not self.base_url:
@@ -80,7 +84,9 @@ class CanvasClient:
             except PlaywrightError as exc:
                 if not channel:
                     raise
-                logger.warning("Could not launch %s; falling back to bundled Chromium: %s", channel, exc)
+                logger.warning(
+                    "Could not launch %s; falling back to bundled Chromium: %s", channel, exc
+                )
                 context = await p.chromium.launch_persistent_context(
                     user_data_dir=str(profile_dir),
                     headless=False,
@@ -103,7 +109,9 @@ class CanvasClient:
                 browser = await p.chromium.launch(headless=True)
                 context = await browser.new_context(storage_state=str(self.state_path))
                 page = await context.new_page()
-                await page.goto(urljoin(self.base_url + "/", "courses"), wait_until="domcontentloaded")
+                await page.goto(
+                    urljoin(self.base_url + "/", "courses"), wait_until="domcontentloaded"
+                )
                 await page.wait_for_timeout(1_500)
                 current = page.url
                 text = await page.locator("body").inner_text(timeout=5000)
@@ -198,7 +206,9 @@ class CanvasClient:
             )
         return courses
 
-    async def list_courses_from_browser(self, active_only: bool = False) -> list[CanvasCourseSummary]:
+    async def list_courses_from_browser(
+        self, active_only: bool = False
+    ) -> list[CanvasCourseSummary]:
         if not self.has_session():
             raise CanvasAuthError(
                 "No Canvas API token or saved browser session found. Run `python -m app login` first, "
@@ -227,7 +237,9 @@ class CanvasClient:
             if courses:
                 return sorted(courses, key=lambda item: (item.code, item.name))
         except CanvasAuthError as exc:
-            logger.info("Canvas browser API course lookup failed, falling back to page scrape: %s", exc)
+            logger.info(
+                "Canvas browser API course lookup failed, falling back to page scrape: %s", exc
+            )
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
@@ -238,7 +250,9 @@ class CanvasClient:
             text = await page.locator("body").inner_text(timeout=5_000)
             if not self._is_authenticated_page(current, text):
                 await browser.close()
-                raise CanvasAuthError("Saved Canvas session appears expired. Run `python -m app login` again.")
+                raise CanvasAuthError(
+                    "Saved Canvas session appears expired. Run `python -m app login` again."
+                )
             links = await page.eval_on_selector_all(
                 "a[href*='/courses/']",
                 r"""
@@ -276,7 +290,9 @@ class CanvasClient:
     async def list_modules(self, canvas_course_id: str) -> list[CanvasModule]:
         if not os.environ.get("CANVAS_ACCESS_TOKEN"):
             return await self.list_modules_from_browser(canvas_course_id)
-        modules = await self._api_get(f"/api/v1/courses/{canvas_course_id}/modules", {"per_page": "100"})
+        modules = await self._api_get(
+            f"/api/v1/courses/{canvas_course_id}/modules", {"per_page": "100"}
+        )
         result = []
         for module in modules:
             raw_items = await self._api_get(
@@ -294,7 +310,9 @@ class CanvasClient:
                 )
                 for item in raw_items
             ]
-            result.append(CanvasModule(id=str(module["id"]), name=module.get("name", ""), items=items))
+            result.append(
+                CanvasModule(id=str(module["id"]), name=module.get("name", ""), items=items)
+            )
         return result
 
     async def list_modules_from_browser(self, canvas_course_id: str) -> list[CanvasModule]:
@@ -304,7 +322,9 @@ class CanvasClient:
                 "or set CANVAS_ACCESS_TOKEN."
             )
         if not self.base_url:
-            raise CanvasAuthError("Set canvas.base_url in config.toml before discovering course content.")
+            raise CanvasAuthError(
+                "Set canvas.base_url in config.toml before discovering course content."
+            )
 
         try:
             modules = await self._api_get_with_browser_session(
@@ -330,11 +350,16 @@ class CanvasClient:
                     )
                     for item in raw_items
                 ]
-                result.append(CanvasModule(id=str(module["id"]), name=module.get("name", ""), items=items))
+                result.append(
+                    CanvasModule(id=str(module["id"]), name=module.get("name", ""), items=items)
+                )
             if result:
                 return result
         except CanvasAuthError as exc:
-            logger.info("Canvas browser API module lookup failed, falling back to course page scrape: %s", exc)
+            logger.info(
+                "Canvas browser API module lookup failed, falling back to course page scrape: %s",
+                exc,
+            )
 
         course_url = urljoin(self.base_url + "/", f"courses/{canvas_course_id}")
         async with async_playwright() as p:
@@ -346,7 +371,9 @@ class CanvasClient:
             text = await page.locator("body").inner_text(timeout=5_000)
             if not self._is_authenticated_page(current, text):
                 await browser.close()
-                raise CanvasAuthError("Saved Canvas session appears expired. Run `python -m app login` again.")
+                raise CanvasAuthError(
+                    "Saved Canvas session appears expired. Run `python -m app login` again."
+                )
             links = await page.eval_on_selector_all(
                 "a",
                 """
@@ -368,7 +395,9 @@ class CanvasClient:
             )
             for index, link in enumerate(links, start=1)
         ]
-        return [CanvasModule(id="browser-course-page", name="Canvas course page links", items=items)]
+        return [
+            CanvasModule(id="browser-course-page", name="Canvas course page links", items=items)
+        ]
 
     @staticmethod
     def echo360_links_from_modules(modules: list[CanvasModule]) -> list[str]:
@@ -385,7 +414,9 @@ class CanvasClient:
         """Find recording tools configured in the Canvas course navigation."""
         try:
             if os.environ.get("CANVAS_ACCESS_TOKEN"):
-                tabs = await self._api_get(f"/api/v1/courses/{canvas_course_id}/tabs", {"per_page": "100"})
+                tabs = await self._api_get(
+                    f"/api/v1/courses/{canvas_course_id}/tabs", {"per_page": "100"}
+                )
             else:
                 tabs = await self._api_get_with_browser_session(
                     f"/api/v1/courses/{canvas_course_id}/tabs",
@@ -399,7 +430,9 @@ class CanvasClient:
         for tab in tabs:
             label = str(tab.get("label") or tab.get("id") or "")
             url = tab.get("html_url") or tab.get("url")
-            is_recording_tool = re.search(r"echo|recorded?\s+lectures?|lecture\s+recordings?", label, re.IGNORECASE)
+            is_recording_tool = re.search(
+                r"echo|recorded?\s+lectures?|lecture\s+recordings?", label, re.IGNORECASE
+            )
             is_echo_url = url and re.search(r"echo360|echo", str(url), re.IGNORECASE)
             if url and (is_recording_tool or is_echo_url):
                 links.append(urljoin(self.base_url + "/", str(url)))
@@ -417,7 +450,9 @@ class CanvasClient:
             body_text = await page.locator("body").inner_text(timeout=5_000)
             if not self._is_authenticated_page(page.url, body_text):
                 await browser.close()
-                raise CanvasAuthError("Saved Canvas session expired. Click Login to Canvas and sign in again.")
+                raise CanvasAuthError(
+                    "Saved Canvas session expired. Click Login to Canvas and sign in again."
+                )
             nav_links = []
             for attempt in range(3):
                 await page.wait_for_timeout(1_000)
@@ -453,7 +488,9 @@ class CanvasClient:
                 "els => els.map(a => ({text: a.innerText, href: a.href})).filter(x => x.href)",
             )
             await browser.close()
-        output_path.write_text(json.dumps({"base_url": self.base_url, "links": links}, indent=2), encoding="utf-8")
+        output_path.write_text(
+            json.dumps({"base_url": self.base_url, "links": links}, indent=2), encoding="utf-8"
+        )
         return output_path
 
 

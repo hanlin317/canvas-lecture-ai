@@ -38,7 +38,16 @@ def transcribe_with_mlx_whisper(
         temporary.replace(output_txt)
         return output_txt
     result = subprocess.run(
-        [command, str(video_path), "--model", model, "--output-dir", str(output_txt.parent), "--output-format", "txt"],
+        [
+            command,
+            str(video_path),
+            "--model",
+            model,
+            "--output-dir",
+            str(output_txt.parent),
+            "--output-format",
+            "txt",
+        ],
         check=False,
         capture_output=True,
         text=True,

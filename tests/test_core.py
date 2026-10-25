@@ -9,10 +9,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from docx import Document
 
 from app import config as app_config
 from app.ai import factory as ai_factory
 from app.ai.factory import AI_PROVIDER_SPECS, api_key_status, get_ai_provider, load_api_key
+from app.ai.prompts import build_study_note_prompt, note_length_tokens
 from app.canvas.client import CanvasClient, _next_page_url
 from app.canvas.models import CanvasCourseSummary
 from app.config import load_settings, prepare_runtime_environment, save_web_settings
@@ -69,7 +71,9 @@ def test_lecture_stem_uses_course_topic_local_number_and_title() -> None:
 
 
 def test_canvas_course_code_normalization() -> None:
-    assert _normalize_course_code("2026_SDDM6321", "SDDM6321 Core Clinical Practice 3") == "SDDM6321"
+    assert (
+        _normalize_course_code("2026_SDDM6321", "SDDM6321 Core Clinical Practice 3") == "SDDM6321"
+    )
     assert _normalize_course_code("2026_SDDM6311", "Core Clinical Practice 2") == "SDDM6311"
     assert (
         _normalize_course_code("2026_SDDM5418_SDDM5328", "DMD3 & DMD4 Electives")
@@ -114,6 +118,24 @@ STYLE
 
 def test_plain_transcript_cleaning() -> None:
     assert clean_plain_transcript(" hello   world \nhello   world\n") == "hello world\n"
+
+
+def test_study_note_prompt_applies_length_and_custom_instructions() -> None:
+    prompt = build_study_note_prompt(
+        "SDDM6321",
+        "Periodontics",
+        "1",
+        "Periodontal Maintenance",
+        "Transcript evidence",
+        note_length="detailed",
+        custom_instructions="Emphasize maintenance intervals and clinical reasoning.",
+    )
+
+    assert "Detailed (approximately 3,000-4,500 words" in prompt
+    assert "Emphasize maintenance intervals and clinical reasoning." in prompt
+    assert "Transcript evidence" in prompt
+    assert note_length_tokens("concise") == 2048
+    assert note_length_tokens("comprehensive") == 12288
 
 
 def test_bundled_mlx_whisper_writes_local_transcript(tmp_path: Path, monkeypatch) -> None:
@@ -186,7 +208,10 @@ def test_obsidian_filename_uses_only_lecture_title(tmp_path: Path) -> None:
 
 def test_config_parsing(tmp_path: Path) -> None:
     config = tmp_path / "config.toml"
-    config.write_text("[downloads]\nconcurrency = 2\n[canvas]\nbase_url = 'https://canvas.example'\n", encoding="utf-8")
+    config.write_text(
+        "[downloads]\nconcurrency = 2\n[canvas]\nbase_url = 'https://canvas.example'\n",
+        encoding="utf-8",
+    )
     settings = load_settings(config)
     assert settings.downloads.concurrency == 2
     assert settings.canvas.base_url == "https://canvas.example"
@@ -219,7 +244,7 @@ def test_web_settings_update_preserves_comments_and_unrelated_values(tmp_path: P
     text = config.read_text(encoding="utf-8")
     settings = load_settings(config)
     assert "# Keep this comment" in text
-    assert '# downloads' in text
+    assert "# downloads" in text
     assert settings.downloads.concurrency == 7
     assert settings.canvas.base_url == "https://canvas.example.edu"
     assert settings.paths.obsidian_vault == "/tmp/My Vault"
@@ -227,7 +252,9 @@ def test_web_settings_update_preserves_comments_and_unrelated_values(tmp_path: P
     assert settings.transcripts.whisper_enabled is True
 
 
-def test_packaged_runtime_bootstraps_private_application_support(tmp_path: Path, monkeypatch) -> None:
+def test_packaged_runtime_bootstraps_private_application_support(
+    tmp_path: Path, monkeypatch
+) -> None:
     bundle = tmp_path / "bundle"
     data_dir = tmp_path / "application-support"
     (bundle / "playwright-browsers").mkdir(parents=True)
@@ -321,9 +348,7 @@ async def test_canvas_token_api_follows_all_pages(monkeypatch) -> None:
     monkeypatch.setenv("CANVAS_ACCESS_TOKEN", "token")
     monkeypatch.setattr("app.canvas.client.httpx.AsyncClient", lambda **_kwargs: FakeClient())
 
-    records = await CanvasClient(settings)._api_get(
-        "/api/v1/courses", {"per_page": "100"}
-    )
+    records = await CanvasClient(settings)._api_get("/api/v1/courses", {"per_page": "100"})
 
     assert records == [{"id": 1}, {"id": 2}]
     assert calls[0][1] == {"per_page": "100"}
@@ -365,7 +390,9 @@ def test_ai_provider_catalog_and_keychain_lookup(monkeypatch) -> None:
     monkeypatch.setattr(
         ai_factory,
         "_run_security",
-        lambda arguments: CompletedProcess(arguments, 0, stdout="secret-from-keychain\n", stderr=""),
+        lambda arguments: CompletedProcess(
+            arguments, 0, stdout="secret-from-keychain\n", stderr=""
+        ),
     )
 
     assert api_key_status("openrouter") == "Keychain"
@@ -426,7 +453,13 @@ course: SDDM6321
 ## Key points
 
 - Review plaque control
-- **Monitor** periodontal stability
+    - **Monitor** periodontal stability
+      - Record bleeding on probing
+
+    | Finding | Interpretation |
+    | --- | --- |
+    | Stable pockets | Continue maintenance |
+    | New bleeding | Reassess plaque control |
 """
 
     markdown = export_ai_note(note, tmp_path, context, "markdown")
@@ -445,6 +478,10 @@ course: SDDM6321
     assert b"Periodontal Maintenance" in pdf.read_bytes()
     assert word.read_bytes().startswith(b"PK")
     assert vault_pdf.name == "Periodontal Maintenance.pdf"
+    document_object = Document(word)
+    assert len(document_object.tables) == 1
+    assert document_object.tables[0].cell(1, 0).text == "Stable pockets"
+    assert any("Record bleeding on probing" in paragraph.text for paragraph in document_object.paragraphs)
     with zipfile.ZipFile(word) as archive:
         document = archive.read("word/document.xml").decode("utf-8")
     assert "Periodontal Maintenance" in document
@@ -507,7 +544,9 @@ async def test_discovery_restarts_lecture_numbers_in_each_echo_folder(tmp_path: 
     db.upsert_course(Course(canvas_id="1", code="SDDM6321", name="Dental"))
     service = DiscoveryService(db, settings)
     service.canvas.list_modules = AsyncMock(return_value=[])
-    service.canvas.echo360_navigation_links = AsyncMock(return_value=["https://echo.example/launch"])
+    service.canvas.echo360_navigation_links = AsyncMock(
+        return_value=["https://echo.example/launch"]
+    )
     service.echo.discover_course = AsyncMock(
         return_value=[
             EchoRecording(source_id="a-1", title="A One", url="https://echo/a-1", topic_hint="A"),
@@ -527,7 +566,11 @@ async def test_discovery_restarts_lecture_numbers_in_each_echo_folder(tmp_path: 
     course = db.get_course_by_code("SDDM6321")
     topics = {topic.name: topic for topic in db.list_topics(course.id or 0)}
     numbers = {
-        topic_name: [lecture.lecture_number for lecture in db.list_lectures(course.id or 0) if lecture.topic_id == topic.id]
+        topic_name: [
+            lecture.lecture_number
+            for lecture in db.list_lectures(course.id or 0)
+            if lecture.topic_id == topic.id
+        ]
         for topic_name, topic in topics.items()
     }
     assert numbers == {"A": ["1", "2"], "B": ["1"]}
@@ -546,10 +589,13 @@ def test_echo360_asset_selection_prefers_highest_matching_tracks() -> None:
 
     assert _best_track_url(tracks, stream=1) == "https://content.example/s1q1.mp4"
     assert _best_track_url(tracks, stream=0) == "https://content.example/s0q1.mp4"
-    assert _matching_transcript_url(
-        ["https://captions.example/intro.vtt", "https://captions.example/media-1.vtt"],
-        ["media-1"],
-    ) == "https://captions.example/media-1.vtt"
+    assert (
+        _matching_transcript_url(
+            ["https://captions.example/intro.vtt", "https://captions.example/media-1.vtt"],
+            ["media-1"],
+        )
+        == "https://captions.example/media-1.vtt"
+    )
 
 
 @pytest.mark.asyncio
@@ -591,7 +637,9 @@ def test_database_idempotency_and_manifest(tmp_path: Path) -> None:
     assert course2.group_name == "Clinical Dentistry"
     assert not course2.is_active
     assert db.update_course_groups({"1": "Dentistry"}) == 1
-    topic = db.upsert_topic(Topic(course_id=course.id or 0, name="Endodontics", numbering_prefix="3"))
+    topic = db.upsert_topic(
+        Topic(course_id=course.id or 0, name="Endodontics", numbering_prefix="3")
+    )
     lecture = db.upsert_lecture(
         Lecture(
             source_id="rec-1",
@@ -601,7 +649,9 @@ def test_database_idempotency_and_manifest(tmp_path: Path) -> None:
             lecture_number="1",
         )
     )
-    db.upsert_asset(Asset(lecture_id=lecture.id or 0, kind="video", status=DownloadStatus.UNAVAILABLE))
+    db.upsert_asset(
+        Asset(lecture_id=lecture.id or 0, kind="video", status=DownloadStatus.UNAVAILABLE)
+    )
     manifest_path = export_topic_manifest(db, topic.id or 0, tmp_path)
     assert manifest_path.exists()
     assert "Dental Updated" in manifest_path.read_text(encoding="utf-8")
@@ -632,7 +682,9 @@ async def test_pipeline_stage_skips_existing_transcript(tmp_path: Path) -> None:
     settings.paths.download_root = str(tmp_path)
     settings.paths.notebooklm_staging_dir = str(tmp_path / "notebook")
     course = db.upsert_course(Course(canvas_id="1", code="SDDM6321", name="Dental"))
-    topic = db.upsert_topic(Topic(course_id=course.id or 0, name="Endodontics", numbering_prefix="3"))
+    topic = db.upsert_topic(
+        Topic(course_id=course.id or 0, name="Endodontics", numbering_prefix="3")
+    )
     lecture = db.upsert_lecture(
         Lecture(
             source_id="rec-1",
@@ -724,10 +776,14 @@ async def test_pipeline_progress_identifies_each_lecture(tmp_path: Path) -> None
     course = db.upsert_course(Course(canvas_id="1", code="SDDM6321", name="Dental"))
     topic = db.upsert_topic(Topic(course_id=course.id or 0, name="Radiology"))
     first = db.upsert_lecture(
-        Lecture(source_id="rec-1", course_id=course.id or 0, topic_id=topic.id, original_title="TMJ")
+        Lecture(
+            source_id="rec-1", course_id=course.id or 0, topic_id=topic.id, original_title="TMJ"
+        )
     )
     second = db.upsert_lecture(
-        Lecture(source_id="rec-2", course_id=course.id or 0, topic_id=topic.id, original_title="Trauma")
+        Lecture(
+            source_id="rec-2", course_id=course.id or 0, topic_id=topic.id, original_title="Trauma"
+        )
     )
     progress = []
 
@@ -743,7 +799,9 @@ async def test_pipeline_progress_identifies_each_lecture(tmp_path: Path) -> None
 
     messages = [message for message, _, _ in progress]
     assert any(message == "Lecture 1 of 2: Preparing - TMJ" for message in messages)
-    assert any(message == "Lecture 2 of 2: Updating lecture manifest - Trauma" for message in messages)
+    assert any(
+        message == "Lecture 2 of 2: Updating lecture manifest - Trauma" for message in messages
+    )
     assert progress[-1][1:] == (4, 4)
 
 

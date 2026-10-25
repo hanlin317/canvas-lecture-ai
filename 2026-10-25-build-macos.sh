@@ -11,8 +11,8 @@ DIST_DIR="$ROOT/dist"
 WORK_DIR="$ROOT/build/pyinstaller-work"
 STAGE_DIR="$ROOT/build/2026-10-25-dmg-stage-$$"
 VERSION="$($PYTHON_BIN -c 'import pathlib,tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
-APP_NAME="Dental Lecture Manager"
-DMG_PATH="$DIST_DIR/Dental-Lecture-Manager-v$VERSION-arm64.dmg"
+APP_NAME="Canvas Lecture AI"
+DMG_PATH="$DIST_DIR/Canvas-Lecture-AI-v$VERSION-arm64.dmg"
 
 mkdir -p "$ROOT/build" "$DIST_DIR"
 
