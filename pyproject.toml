@@ -1,0 +1,68 @@
+[project]
+name = "dental-lecture-manager"
+version = "0.1.0"
+description = "Local Canvas/Echo360 dental lecture workflow manager"
+readme = "README.md"
+license = {file = "2026-10-25-LICENSE.md"}
+requires-python = ">=3.11"
+authors = [{name = "Hanlin Zhang"}]
+keywords = ["canvas", "echo360", "lectures", "obsidian", "notebooklm"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: MacOS X",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "jinja2>=3.1",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  "httpx>=0.27",
+  "playwright>=1.45",
+  "python-multipart>=0.0.9",
+  "imageio-ffmpeg>=0.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/hanlin317/dental-lecture-manager"
+Repository = "https://github.com/hanlin317/dental-lecture-manager"
+Issues = "https://github.com/hanlin317/dental-lecture-manager/issues"
+
+[project.scripts]
+lecture-download = "app.__main__:main"
+
+[project.optional-dependencies]
+ai = [
+  "openai>=1.40",
+  "anthropic>=0.34",
+  "google-generativeai>=0.7",
+]
+dev = [
+  "pyinstaller>=6.16",
+  "pytest>=8.2",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.5",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["work*", "outputs*", "tests*"]
+
+[tool.setuptools.package-data]
+"app.web" = ["templates/*.html", "static/*.css"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+ignore = ["B008"]

@@ -1,0 +1,40 @@
+[app]
+host = "127.0.0.1"
+port = 8017
+database_path = "local_data/dental_lecture_manager.sqlite3"
+log_path = "local_data/dental_lecture_manager.log"
+
+[canvas]
+base_url = "https://your-university.instructure.com"
+state_path = "local_data/playwright_state/canvas_state.json"
+prefer_api = true
+login_browser_channel = "chrome"
+login_profile_dir = "local_data/2026-10-24-canvas-browser-profile"
+login_timeout_seconds = 300
+
+[paths]
+download_root = "~/Documents"
+notebooklm_staging_dir = "~/Documents/NotebookLM Staging"
+obsidian_vault = ""
+
+[downloads]
+preferred_video_quality = "highest"
+concurrency = 3
+overwrite = false
+skip_existing = true
+
+[transcripts]
+prefer_official = true
+keep_vtt = true
+include_timestamps = false
+whisper_enabled = false
+whisper_command = "mlx_whisper"
+whisper_model = "whisper-large-v3-turbo"
+
+[ai]
+# The web UI can select any supported provider and model for each pipeline run.
+provider = "openai"
+model = "gpt-4.1"
+temperature = 0.2
+auto_save_notes = false
+prompt_version = "1.0"

@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dental Lecture Manager</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20261025-5">
+</head>
+<body>
+  <header>
+    <h1>Dental Lecture Manager</h1>
+    <p>Local Canvas, Echo360, NotebookLM, and Obsidian workflow.</p>
+  </header>
+
+  <main>
+    <section
+      id="job-progress"
+      class="job-progress wide"
+      data-job-id="{{ job_id or '' }}"
+      {% if not job_id %}hidden{% endif %}
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      <div class="job-progress-heading">
+        <div>
+          <span class="job-progress-kicker">In progress</span>
+          <h2 id="job-progress-title">Starting task</h2>
+        </div>
+        <div class="job-progress-controls">
+          <strong id="job-progress-percent">0%</strong>
+          <button id="job-cancel" type="button" class="danger-button" hidden>Stop job</button>
+        </div>
+      </div>
+      <progress id="job-progress-bar" max="100" value="0">0%</progress>
+      <div class="job-progress-details">
+        <span id="job-progress-step">Waiting for the server</span>
+        <span id="job-progress-eta">Estimating time remaining...</span>
+      </div>
+    </section>
+
+    {% if error %}
+    <section class="alert error wide">{{ error }}</section>
+    {% endif %}
+    {% if message %}
+    <section class="alert message wide">{{ message }}</section>
+    {% endif %}
+
+    <section class="panel">
+      <h2>Authentication</h2>
+      <div class="status {{ 'ok' if canvas_session_status == 'valid' else 'warn' }}">
+        Canvas session: {{ canvas_session_status }}
+      </div>
+      <form method="post" action="/login"><button>Login to Canvas</button></form>
+      <form method="post" action="/courses/sync"><button>Sync Canvas Courses</button></form>
+    </section>
+
+    <section class="panel">
+      <h2>Course Discovery</h2>
+      <form method="get" action="/" class="row">
+        <select id="course-selector" name="course">
+          {% for group in course_groups %}
+          <optgroup label="{{ group.label }}">
+          {% for course in group.courses %}
+            <option value="{{ course.code }}" {% if selected_course and course.id == selected_course.id %}selected{% endif %}>{{ course.code }} - {{ course.name }}</option>
+          {% endfor %}
+          </optgroup>
+          {% endfor %}
+        </select>
+        <button {% if not courses %}disabled{% endif %}>View Course</button>
+        <button type="submit" formmethod="post" formaction="/discover" data-job-submit {% if not courses %}disabled{% endif %}>Discover Echo360 Lectures</button>
+      </form>
+      <details class="course-grouping-controls">
+        <summary>AI course grouping</summary>
+        <form method="post" action="/courses/group" class="compact-form">
+          <input type="hidden" name="course" value="{{ selected_course.code if selected_course else '' }}">
+          <label for="group-provider">Provider</label>
+          <select id="group-provider" name="provider">
+            {% for provider in ai_providers %}
+            <option value="{{ provider.name }}" data-default-model="{{ provider.default_model }}" {% if provider.name == default_ai_provider %}selected{% endif %}>{{ provider.label }}</option>
+            {% endfor %}
+          </select>
+          <label for="group-model">Model</label>
+          <select id="group-model" name="model" required>
+            {% for provider in ai_providers if provider.name == default_ai_provider %}
+            {% for model in provider.models %}
+            <option value="{{ model.id }}" {% if model.id == default_ai_model %}selected{% endif %}>{{ model.label }}</option>
+            {% endfor %}
+            {% endfor %}
+          </select>
+          <button>Group Courses with AI</button>
+        </form>
+      </details>
+    </section>
+
+    <section class="panel settings-panel">
+      <h2>Settings</h2>
+      <div class="settings-columns">
+      <form method="post" action="/settings/app" class="app-config-form">
+        <input type="hidden" name="course_code" value="{{ selected_course.code if selected_course else '' }}">
+
+        <label for="canvas-base-url">Canvas URL</label>
+        <input id="canvas-base-url" name="canvas_base_url" type="url" value="{{ settings.canvas.base_url }}" placeholder="https://canvas.example.edu" required>
+
+        <label for="download-root">Download folder</label>
+        <div class="folder-control">
+          <input id="download-root" name="download_root" value="{{ settings.paths.download_root }}" required>
+          <button type="button" class="secondary-button" data-folder-field="download_root" data-folder-target="download-root">Choose</button>
+        </div>
+
+        <label for="notebooklm-staging">NotebookLM folder</label>
+        <div class="folder-control">
+          <input id="notebooklm-staging" name="notebooklm_staging_dir" value="{{ settings.paths.notebooklm_staging_dir }}" required>
+          <button type="button" class="secondary-button" data-folder-field="notebooklm_staging_dir" data-folder-target="notebooklm-staging">Choose</button>
+        </div>
+
+        <label for="obsidian-vault">Obsidian vault</label>
+        <div class="folder-control">
+          <input id="obsidian-vault" name="obsidian_vault" value="{{ settings.paths.obsidian_vault }}">
+          <button type="button" class="secondary-button" data-folder-field="obsidian_vault" data-folder-target="obsidian-vault">Choose</button>
+        </div>
+        <span></span>
+        <span id="obsidian-vault-status" class="config-status {{ obsidian_vault_status.kind }}">{{ obsidian_vault_status.text }}</span>
+
+        <label for="config-ai-provider">Default AI provider</label>
+        <select id="config-ai-provider" name="ai_provider">
+          {% for provider in ai_providers %}
+          <option value="{{ provider.name }}" data-default-model="{{ provider.default_model }}" {% if provider.name == default_ai_provider %}selected{% endif %}>{{ provider.label }}</option>
+          {% endfor %}
+        </select>
+
+        <label for="config-ai-model">Default AI model</label>
+        <select id="config-ai-model" name="ai_model" required>
+          {% for provider in ai_providers if provider.name == default_ai_provider %}
+          {% for model in provider.models %}
+          <option value="{{ model.id }}" {% if model.id == default_ai_model %}selected{% endif %}>{{ model.label }}</option>
+          {% endfor %}
+          {% endfor %}
+        </select>
+        <span></span>
+        <div class="model-refresh-control">
+          <button
+            type="submit"
+            class="secondary-button"
+            formaction="/settings/models/refresh"
+            formmethod="post"
+            formnovalidate
+          >Refresh models</button>
+          <span id="model-refresh-status" class="model-refresh-status">
+            {% for provider in ai_providers if provider.name == default_ai_provider %}
+            {% if provider.models_refreshed_at %}Updated {{ provider.models_refreshed_at }}{% else %}Using built-in list{% endif %}
+            {% endfor %}
+          </span>
+        </div>
+
+        <label for="whisper-model">Whisper model</label>
+        <input id="whisper-model" name="whisper_model" value="{{ settings.transcripts.whisper_model }}">
+
+        <span></span>
+        <label class="checkbox-setting"><input type="checkbox" name="whisper_enabled" {% if settings.transcripts.whisper_enabled %}checked{% endif %}> Enable Whisper fallback</label>
+
+        <span></span>
+        <button class="save-config-button">Save Configuration</button>
+      </form>
+
+      <div class="api-settings">
+      <h3>API keys</h3>
+      <form method="post" action="/settings/api-key" class="key-form">
+        <input type="hidden" name="course_code" value="{{ selected_course.code if selected_course else '' }}">
+        <label for="key-provider">Provider</label>
+        <select id="key-provider" name="provider">
+          {% for provider in ai_providers if provider.requires_key %}
+          <option value="{{ provider.name }}">{{ provider.label }}</option>
+          {% endfor %}
+        </select>
+        <label for="api-key">API key</label>
+        <input id="api-key" name="api_key" type="password" autocomplete="off" required>
+        <button>Save key</button>
+      </form>
+      <ul class="provider-statuses">
+        {% for provider in ai_providers %}
+        <li><span>{{ provider.label }}</span><strong>{{ provider.key_status }}</strong></li>
+        {% endfor %}
+      </ul>
+      <div class="tool-status">Whisper command: {{ settings.transcripts.whisper_command }} ({{ 'available' if whisper_available else 'missing' }})</div>
+      </div>
+      </div>
+    </section>
+
+    <section class="panel wide">
+      <h2>Lectures{% if selected_course %} - {{ selected_course.code }}{% endif %}</h2>
+      {% if processing_groups %}
+      <details class="pipeline-results" aria-label="Processing history">
+        <summary>
+          <span>Processing History</span>
+          <span class="history-count">{{ processing_groups | length }} recent lecture{% if processing_groups | length != 1 %}s{% endif %}</span>
+        </summary>
+        <div class="result-list">
+          {% for group in processing_groups %}
+          <section class="lecture-results">
+            <h3>{{ group.title }}</h3>
+            {% for result in group.stages %}
+            <div class="result-row">
+            <span class="result-stage">{{ result.stage | replace('_', ' ') }}</span>
+            <span class="result-status {{ result.status }}">{{ result.status }}</span>
+            {% if result.output_file %}
+            <a href="/outputs/{{ result.id }}">Open output</a>
+            {% elif result.error_message %}
+            <span class="result-error">{{ result.error_message }}</span>
+            {% else %}
+            <span class="result-muted">No output file</span>
+            {% endif %}
+            </div>
+            {% endfor %}
+          </section>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
+      <form method="post" action="/pipeline">
+        <input type="hidden" name="course_code" value="{{ selected_course.code if selected_course else '' }}">
+        <div class="actions">
+          <label><input type="checkbox" name="download_video" checked> Video</label>
+          <label><input type="checkbox" name="download_slides"> Slides</label>
+          <label><input type="checkbox" name="download_transcript" checked> Transcript</label>
+          <label><input type="checkbox" name="whisper_fallback"> Whisper fallback</label>
+          <label><input type="checkbox" name="notebooklm" checked> NotebookLM</label>
+          <label><input id="ai-notes" type="checkbox" name="ai_notes"> AI notes</label>
+          <label class="field-label" for="ai-note-format">Note format</label>
+          <select id="ai-note-format" name="ai_note_format" disabled>
+            <option value="markdown">Markdown (.md)</option>
+            <option value="pdf">PDF (.pdf)</option>
+            <option value="docx">Word (.docx)</option>
+          </select>
+          <label><input type="checkbox" name="save_obsidian"> Save to Obsidian</label>
+          <label><input type="checkbox" name="overwrite"> Overwrite</label>
+          <label class="field-label" for="ai-provider">AI provider</label>
+          <select id="ai-provider" name="ai_provider">
+            {% for provider in ai_providers %}
+            <option value="{{ provider.name }}" data-default-model="{{ provider.default_model }}" {% if provider.name == default_ai_provider %}selected{% endif %}>{{ provider.label }}</option>
+            {% endfor %}
+          </select>
+          <label class="field-label" for="ai-model">Model</label>
+          <select id="ai-model" name="ai_model" required>
+            {% for provider in ai_providers if provider.name == default_ai_provider %}
+            {% for model in provider.models %}
+            <option value="{{ model.id }}" {% if model.id == default_ai_model %}selected{% endif %}>{{ model.label }}</option>
+            {% endfor %}
+            {% endfor %}
+          </select>
+          <button data-job-submit>Run Pipeline</button>
+        </div>
+        <div class="lecture-folders">
+          {% for group in lecture_groups %}
+          <details class="lecture-folder" {% if loop.first %}open{% endif %}>
+            <summary>
+              <span class="lecture-folder-name">{{ group.topic.name if group.topic else 'Lectures' }}</span>
+              <span class="lecture-count">{{ group.lectures | length }} lecture{% if group.lectures | length != 1 %}s{% endif %}</span>
+              <button type="button" class="topic-select-button secondary-button" data-topic-select>Select all</button>
+            </summary>
+            <table>
+              <thead>
+                <tr>
+                  <th></th><th>Lecture</th><th>Title</th><th>Date</th><th>Echo360</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for lecture in group.lectures %}
+                <tr>
+                  <td><input type="checkbox" name="lecture_ids" value="{{ lecture.id }}"></td>
+                  <td>{{ lecture.lecture_number or '' }}</td>
+                  <td>{{ lecture.custom_title or lecture.original_title }}</td>
+                  <td>{{ lecture.date | lecture_date }}</td>
+                  <td>{% if lecture.recording_url %}<a href="{{ lecture.recording_url }}">open</a>{% endif %}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </details>
+          {% else %}
+          <p class="empty-state">No lectures discovered yet for the selected course.</p>
+          {% endfor %}
+        </div>
+      </form>
+    </section>
+  </main>
+  <script>
+    const providerModels = {{ ai_provider_models | tojson }};
+    const providerRefreshTimes = {{ ai_provider_refresh | tojson }};
+
+    function connectProviderModel(providerId, modelId) {
+      const provider = document.getElementById(providerId);
+      const model = document.getElementById(modelId);
+      provider?.addEventListener('change', () => {
+        const defaultModel = provider.selectedOptions[0]?.dataset.defaultModel || '';
+        const models = providerModels[provider.value] || [];
+        model.replaceChildren(...models.map((item) => (
+          new Option(item.label, item.id, false, item.id === defaultModel)
+        )));
+      });
+    }
+    connectProviderModel('ai-provider', 'ai-model');
+    connectProviderModel('group-provider', 'group-model');
+    connectProviderModel('config-ai-provider', 'config-ai-model');
+
+    const configProvider = document.getElementById('config-ai-provider');
+    const modelRefreshStatus = document.getElementById('model-refresh-status');
+    function updateModelRefreshStatus() {
+      const refreshedAt = providerRefreshTimes[configProvider.value];
+      modelRefreshStatus.textContent = refreshedAt
+        ? `Updated ${new Date(refreshedAt).toLocaleString()}`
+        : 'Using built-in list';
+    }
+    configProvider.addEventListener('change', updateModelRefreshStatus);
+    updateModelRefreshStatus();
+
+    const aiNotesToggle = document.getElementById('ai-notes');
+    const aiNoteFormat = document.getElementById('ai-note-format');
+    function updateAiNoteFormat() {
+      aiNoteFormat.disabled = !aiNotesToggle.checked;
+    }
+    aiNotesToggle.addEventListener('change', updateAiNoteFormat);
+    updateAiNoteFormat();
+
+    function updateTopicSelectButton(folder) {
+      const checkboxes = [...folder.querySelectorAll('input[name="lecture_ids"]')];
+      const button = folder.querySelector('[data-topic-select]');
+      button.textContent = checkboxes.length && checkboxes.every((checkbox) => checkbox.checked)
+        ? 'Clear selection'
+        : 'Select all';
+    }
+
+    document.querySelectorAll('.lecture-folder').forEach((folder) => {
+      const button = folder.querySelector('[data-topic-select]');
+      button?.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const checkboxes = [...folder.querySelectorAll('input[name="lecture_ids"]')];
+        const shouldSelect = !checkboxes.every((checkbox) => checkbox.checked);
+        checkboxes.forEach((checkbox) => { checkbox.checked = shouldSelect; });
+        updateTopicSelectButton(folder);
+      });
+      folder.querySelectorAll('input[name="lecture_ids"]').forEach((checkbox) => {
+        checkbox.addEventListener('change', () => updateTopicSelectButton(folder));
+      });
+      updateTopicSelectButton(folder);
+    });
+
+    document.querySelectorAll('[data-folder-field]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const originalText = button.textContent;
+        button.disabled = true;
+        button.textContent = 'Choosing...';
+        try {
+          const body = new FormData();
+          body.append('field', button.dataset.folderField);
+          const response = await fetch('/settings/choose-folder', { method: 'POST', body });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.detail || 'Folder selection failed.');
+          if (!result.cancelled && result.path) {
+            document.getElementById(button.dataset.folderTarget).value = result.path;
+            if (button.dataset.folderField === 'obsidian_vault') {
+              const status = document.getElementById('obsidian-vault-status');
+              status.className = 'config-status warn';
+              status.textContent = 'Selected; save to validate';
+            }
+          }
+        } catch (error) {
+          window.alert(error.message);
+        } finally {
+          button.disabled = false;
+          button.textContent = originalText;
+        }
+      });
+    });
+
+    const progressPanel = document.getElementById('job-progress');
+    const progressBar = document.getElementById('job-progress-bar');
+    const progressPercent = document.getElementById('job-progress-percent');
+    const progressTitle = document.getElementById('job-progress-title');
+    const progressStep = document.getElementById('job-progress-step');
+    const progressEta = document.getElementById('job-progress-eta');
+    const cancelButton = document.getElementById('job-cancel');
+    const jobButtons = document.querySelectorAll('[data-job-submit]');
+
+    function formatDuration(seconds) {
+      if (seconds < 60) return `About ${Math.max(1, seconds)} second${seconds === 1 ? '' : 's'} remaining`;
+      const minutes = Math.ceil(seconds / 60);
+      return `About ${minutes} minute${minutes === 1 ? '' : 's'} remaining`;
+    }
+
+    function setJobButtonsDisabled(disabled) {
+      jobButtons.forEach((button) => { button.disabled = disabled; });
+    }
+
+    document.addEventListener('submit', (event) => {
+      if (!event.submitter?.matches('[data-job-submit]')) return;
+      progressPanel.hidden = false;
+      progressPanel.className = 'job-progress wide running';
+      progressTitle.textContent = 'Starting task';
+      progressStep.textContent = 'Sending the request to the server';
+      progressEta.textContent = 'Estimating time remaining...';
+      setJobButtonsDisabled(true);
+    });
+
+    cancelButton.addEventListener('click', async () => {
+      const jobId = progressPanel.dataset.jobId;
+      if (!jobId) return;
+      cancelButton.disabled = true;
+      cancelButton.textContent = 'Stopping...';
+      progressTitle.textContent = 'Stopping task';
+      progressStep.textContent = 'Asking the current operation to stop safely';
+      progressEta.textContent = 'Stopping...';
+      try {
+        const response = await fetch(`/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+        if (!response.ok) throw new Error('Could not stop the job.');
+      } catch (error) {
+        progressStep.textContent = error.message;
+        cancelButton.disabled = false;
+        cancelButton.textContent = 'Stop job';
+      }
+    });
+
+    async function pollJob(jobId) {
+      try {
+        const response = await fetch(`/jobs/${encodeURIComponent(jobId)}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error('Could not read task status.');
+        const job = await response.json();
+        const percent = Math.max(0, Math.min(100, job.progress_percent));
+        progressPanel.hidden = false;
+        progressPanel.className = `job-progress wide ${job.status}`;
+        progressTitle.textContent = job.kind === 'discovery' ? 'Discovering Echo360 lectures' : 'Running lecture pipeline';
+        progressStep.textContent = job.error_message || job.current_step;
+        progressPercent.textContent = `${percent}%`;
+        progressBar.value = percent;
+        progressBar.textContent = `${percent}%`;
+        const active = ['queued', 'running', 'cancelling'].includes(job.status);
+        setJobButtonsDisabled(active);
+        cancelButton.hidden = !active;
+        cancelButton.disabled = job.status === 'cancelling';
+        cancelButton.textContent = job.status === 'cancelling' ? 'Stopping...' : 'Stop job';
+
+        if (job.status === 'queued') {
+          progressEta.textContent = 'Waiting to start...';
+        } else if (job.status === 'running') {
+          progressEta.textContent = job.eta_seconds == null
+            ? 'Estimating time remaining...'
+            : formatDuration(job.eta_seconds);
+        } else if (job.status === 'cancelling') {
+          progressTitle.textContent = 'Stopping task';
+          progressEta.textContent = 'Stopping...';
+        } else if (job.status === 'cancelled') {
+          progressTitle.textContent = 'Task stopped';
+          progressEta.textContent = 'Stopped';
+          setJobButtonsDisabled(false);
+          return;
+        } else if (job.status === 'completed') {
+          progressEta.textContent = 'Finished';
+          window.setTimeout(() => {
+            const query = new URLSearchParams({ course: job.course_code || '', message: job.message || 'Task complete.' });
+            window.location.replace(`/?${query.toString()}`);
+          }, 900);
+          return;
+        } else if (job.status === 'failed') {
+          progressEta.textContent = 'Stopped';
+          window.setTimeout(() => {
+            const query = new URLSearchParams({ course: job.course_code || '', error: job.error_message || 'Task failed.' });
+            window.location.replace(`/?${query.toString()}`);
+          }, 1400);
+          return;
+        }
+        window.setTimeout(() => pollJob(jobId), 900);
+      } catch (error) {
+        progressStep.textContent = error.message;
+        progressEta.textContent = 'Retrying status check...';
+        window.setTimeout(() => pollJob(jobId), 2000);
+      }
+    }
+
+    const activeJobId = progressPanel.dataset.jobId;
+    if (activeJobId) {
+      setJobButtonsDisabled(true);
+      pollJob(activeJobId);
+    }
+  </script>
+</body>
+</html>

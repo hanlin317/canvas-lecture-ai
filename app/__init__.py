@@ -1,0 +1,1 @@
+"""Dental Lecture Manager."""

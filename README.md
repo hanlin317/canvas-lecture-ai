@@ -1,0 +1,242 @@
+# Dental Lecture Manager
+
+Dental Lecture Manager is a local macOS application for organizing an
+authenticated Canvas and Echo360 lecture workflow. It discovers recordings by
+their Echo360 folder, downloads available media and slides, cleans transcripts,
+and prepares study material for NotebookLM or Obsidian.
+
+The application runs only on your Mac and opens its interface at
+`http://127.0.0.1:8017`.
+
+> [!IMPORTANT]
+> Use this application only with accounts and educational material you are
+> authorized to access. Follow your institution's policies and the copyright
+> terms applying to lecture content. Do not redistribute downloaded material
+> without permission.
+
+## Features
+
+- Visible Canvas login with MFA and reusable local browser state
+- Canvas course sync with active and saved courses grouped for easier browsing
+- Echo360 folder and lecture discovery
+- Per-folder lecture selection and Select All controls
+- Video, original presentation, and official transcript downloads
+- Optional local `mlx_whisper` transcription fallback
+- Clean canonical transcripts and deterministic NotebookLM Markdown exports
+- AI study notes through OpenAI, Anthropic, Gemini, OpenRouter, xAI, DeepSeek,
+  Mistral, or a local OpenAI-compatible service
+- Markdown, PDF, and Word note exports
+- Obsidian export using lecture-title filenames
+- Background jobs with progress, ETA, lecture position, cancellation, and
+  collapsible processing history
+- Local SQLite state and topic manifests
+
+## Download
+
+Download the latest Apple Silicon DMG from
+[GitHub Releases](https://github.com/hanlin317/dental-lecture-manager/releases).
+
+1. Open the DMG.
+2. Drag **Dental Lecture Manager** into **Applications**.
+3. Open the app. Its local website opens in your default browser.
+
+The current release is ad-hoc signed but not Apple-notarized. On first launch,
+macOS may block it. Right-click the app in Finder, choose **Open**, then confirm
+**Open**. A notarized release requires an Apple Developer ID certificate.
+
+The packaged app currently supports Apple Silicon Macs (`arm64`). Intel Macs
+can run the project from source but are not covered by the downloadable DMG.
+
+## First Run
+
+Open **Settings** in the website and configure:
+
+- **Canvas URL:** your institution's complete Canvas address
+- **Download folder:** where lecture folders will be created
+- **NotebookLM folder:** where NotebookLM source files will be staged
+- **Obsidian vault:** optional; choose a folder containing `.obsidian`
+- **Default AI provider and model:** optional
+
+Click **Save Configuration**, then **Login to Canvas**. Complete institutional
+login and MFA in the visible browser window. The application detects a
+successful Canvas page, saves reusable session state locally, and closes the
+login window.
+
+Visible login prefers Google Chrome. To use passwords stored in Apple's
+Passwords app, enable Apple's iCloud Passwords extension in the dedicated Chrome
+profile after its first launch. The application does not read or store your
+Canvas password.
+
+## Typical Workflow
+
+1. Log in to Canvas.
+2. Click **Sync Canvas Courses**.
+3. Select a course and click **View Course**.
+4. Click **Discover Echo360 Lectures**.
+5. Select lectures individually or use **Select all** for a discipline.
+6. Choose video, slides, transcript, NotebookLM, AI notes, or Obsidian output.
+7. Click **Run Pipeline** and follow the progress display.
+
+Downloads use this structure:
+
+```text
+<download folder>/<COURSE> Recorded Lectures/<ECHO360 FOLDER>/
+```
+
+Media and transcript filenames contain the course, exact Echo360 folder,
+lecture number within that folder, and title. For example:
+
+```text
+SDDM6321 Periodontics 1 Periodontal Maintenance.mp4
+```
+
+Obsidian notes use only the lecture title:
+
+```text
+Periodontal Maintenance.md
+```
+
+Existing downloads and notes are not overwritten unless **Overwrite** is
+selected.
+
+## AI Notes
+
+API keys entered in the website are stored in macOS Keychain and are never
+written back to the page, project configuration, database, or logs. Environment
+variables are also supported:
+
+```bash
+export OPENAI_API_KEY="..."
+export ANTHROPIC_API_KEY="..."
+export GEMINI_API_KEY="..."
+export OPENROUTER_API_KEY="..."
+export XAI_API_KEY="..."
+export DEEPSEEK_API_KEY="..."
+export MISTRAL_API_KEY="..."
+```
+
+Choose **Refresh models** to query the selected provider's model endpoint. A
+successful result is cached locally; the previous cache or built-in list remains
+available if refreshing fails. Normal page loads do not contact AI providers.
+
+AI transcript content is sent only when an AI operation is selected. Review the
+provider's privacy terms and your institution's policy before sending lecture
+material to a third-party service. Local/Ollama requests use
+`http://127.0.0.1:11434/v1` by default.
+
+## Local Data
+
+The packaged app keeps private state under:
+
+```text
+~/Library/Application Support/Dental Lecture Manager/
+```
+
+This includes `config.toml`, Canvas session state, the dedicated browser profile,
+SQLite data, logs, diagnostics, and AI note previews. Downloaded lectures and
+exported notes go to the folders selected in Settings.
+
+See [Privacy](2026-10-25-PRIVACY.md) and
+[Security](2026-10-25-SECURITY.md) for details. Never attach `local_data`,
+`config.toml`, browser profiles, or unredacted diagnostics to a public issue.
+
+## Install From Source
+
+Requirements:
+
+- macOS 13 or later
+- Python 3.11 or 3.12
+- Google Chrome recommended for password-manager integration
+- An authorized Canvas account
+
+```bash
+git clone https://github.com/hanlin317/dental-lecture-manager.git
+cd dental-lecture-manager
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e '.[ai,dev]'
+python -m playwright install chromium
+cp config.example.toml config.toml
+python -m app serve
+```
+
+Open `http://127.0.0.1:8017` if the browser does not open automatically.
+
+After editable installation, the shorter CLI command is also available:
+
+```bash
+lecture-download serve
+```
+
+Other commands:
+
+```bash
+python -m app login
+python -m app courses
+python -m app discover COURSE_CODE
+python -m app pipeline --course COURSE_CODE --topic "Echo360 Folder"
+python -m app diagnose-canvas --output local_data/diagnostics/canvas-links.json
+```
+
+## Configuration
+
+Most settings are editable from the website. `config.example.toml` documents
+the complete format for source installations. Secrets should stay in macOS
+Keychain or environment variables, not `config.toml`.
+
+The application binds to `127.0.0.1` by default. Do not expose it to a public
+network: the local web interface is designed for one trusted user and does not
+provide web authentication.
+
+## Whisper Fallback
+
+The optional fallback expects an `mlx_whisper` command:
+
+```bash
+which mlx_whisper
+mlx_whisper --help
+```
+
+Enable Whisper and choose its model in Settings. The pipeline does not
+retranscribe a lecture when a canonical transcript already exists unless
+overwrite is enabled.
+
+## Development
+
+Run the quality gate:
+
+```bash
+ruff check app tests
+pytest -q
+```
+
+Build an Apple Silicon app and DMG:
+
+```bash
+bash 2026-10-25-build-macos.sh
+```
+
+The build creates an isolated packaging environment, downloads Playwright
+Chromium, bundles an FFmpeg binary, creates `dist/Dental Lecture Manager.app`,
+ad-hoc signs it, and writes the versioned DMG plus SHA-256 checksum to `dist/`.
+
+Pushing a `v*` tag runs the same tests and build on GitHub Actions, then attaches
+the DMG and checksum to a GitHub release.
+
+## Known Limitations
+
+- Echo360 deployments differ between institutions and may require adapter
+  updates when their private APIs change.
+- Slides can be downloaded only when the lecturer has made the original
+  presentation available.
+- Background work is executed by the local app process; quitting the app stops
+  a running job.
+- Provider model endpoints and model capabilities can change independently of
+  this application.
+- The current DMG is Apple Silicon-only and is not notarized.
+
+## License
+
+Dental Lecture Manager is released under the
+[MIT License](2026-10-25-LICENSE.md).

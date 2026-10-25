@@ -1,0 +1,356 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #1f2933;
+  background: #f6f8fa;
+}
+
+body { margin: 0; }
+header {
+  padding: 24px 32px 16px;
+  background: #113f67;
+  color: white;
+}
+h1 { margin: 0 0 6px; font-size: 28px; letter-spacing: 0; }
+h2 { margin: 0 0 14px; font-size: 18px; letter-spacing: 0; }
+h3 { margin: 0; font-size: 15px; letter-spacing: 0; }
+p { margin: 0; color: #d9e7f2; }
+main {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(280px, 1fr));
+  align-items: start;
+  gap: 16px;
+  padding: 18px;
+}
+.panel {
+  background: white;
+  border: 1px solid #d8e0e7;
+  border-radius: 8px;
+  padding: 16px;
+  min-width: 0;
+}
+.alert {
+  border-radius: 8px;
+  padding: 12px 14px;
+  border: 1px solid;
+  background: white;
+}
+.alert.error {
+  border-color: #d65745;
+  color: #8f1d12;
+  background: #fff1ef;
+}
+.alert.message {
+  border-color: #58a87b;
+  color: #0b6e4f;
+  background: #edf9f2;
+}
+.wide { grid-column: 1 / -1; }
+.job-progress {
+  border: 1px solid #7ea4bf;
+  border-radius: 8px;
+  padding: 14px 16px;
+  background: #f4f9fc;
+}
+.job-progress[hidden] { display: none; }
+.job-progress-heading, .job-progress-details {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.job-progress-heading h2 { margin: 2px 0 0; }
+.job-progress-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.job-progress-kicker {
+  color: #526574;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.job-progress progress {
+  display: block;
+  width: 100%;
+  height: 10px;
+  margin: 12px 0 9px;
+  accent-color: #0b6e4f;
+}
+.job-progress-details {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 4px;
+  color: #365469;
+  font-size: 14px;
+}
+.job-progress.completed { border-color: #58a87b; background: #edf9f2; }
+.job-progress.cancelling, .job-progress.cancelled { border-color: #d19b38; background: #fff8e8; }
+.job-progress.failed { border-color: #d65745; background: #fff1ef; }
+.job-progress.failed .job-progress-details { color: #8f1d12; }
+.row, .actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.row select {
+  flex: 1 1 240px;
+  min-width: 0;
+  max-width: 100%;
+}
+button, select, input:not([type="checkbox"]) {
+  min-height: 36px;
+  border: 1px solid #b8c5d1;
+  border-radius: 6px;
+  background: #fff;
+  padding: 0 12px;
+  font: inherit;
+}
+.settings-panel { grid-column: 1 / -1; }
+.settings-panel h3 { margin: 0 0 10px; }
+.settings-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.8fr);
+  gap: 28px;
+  align-items: start;
+}
+.app-config-form {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 9px 10px;
+  align-items: center;
+}
+.app-config-form > label:not(.checkbox-setting) { font-weight: 700; font-size: 13px; }
+.folder-control { display: flex; gap: 7px; min-width: 0; }
+.folder-control input { flex: 1 1 auto; min-width: 0; }
+.secondary-button {
+  flex: 0 0 auto;
+  background: white;
+  color: #0b6e4f;
+  border-color: #0b6e4f;
+}
+.danger-button {
+  background: #b42318;
+  border-color: #b42318;
+  color: white;
+}
+.checkbox-setting { display: flex; gap: 8px; align-items: center; }
+.save-config-button { justify-self: start; }
+.model-refresh-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.model-refresh-status { color: #526574; font-size: 12px; }
+.config-status { font-size: 12px; font-weight: 700; }
+.config-status.ok { background: none; }
+.config-status.warn { background: none; }
+.config-status.error { color: #8f1d12; }
+.tool-status { margin-top: 12px; color: #526574; font-size: 12px; }
+.key-form {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 10px;
+  align-items: center;
+}
+.key-form button { grid-column: 2; justify-self: start; }
+.provider-statuses {
+  list-style: none;
+  padding: 0;
+  margin: 14px 0 0;
+  border-top: 1px solid #e1e7ec;
+}
+.provider-statuses li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid #e1e7ec;
+  font-size: 13px;
+}
+.provider-statuses strong { color: #526574; }
+.field-label { font-weight: 700; }
+#ai-model, #ai-note-format { width: min(220px, 100%); }
+.course-grouping-controls {
+  margin-top: 12px;
+  border-top: 1px solid #e1e7ec;
+  padding-top: 10px;
+}
+.course-grouping-controls summary {
+  color: #365469;
+  cursor: pointer;
+  font-weight: 700;
+}
+.compact-form {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 10px;
+  align-items: center;
+  margin-top: 10px;
+}
+.compact-form button { grid-column: 2; justify-self: start; }
+button {
+  background: #0b6e4f;
+  color: white;
+  border-color: #0b6e4f;
+  cursor: pointer;
+}
+button:disabled {
+  background: #9aa8b3;
+  border-color: #9aa8b3;
+  cursor: not-allowed;
+}
+.status {
+  padding: 8px 10px;
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+.ok { background: #e7f6ee; color: #0b6e4f; }
+.warn { background: #fff6df; color: #7a4b00; }
+.settings {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 12px;
+  margin: 0;
+}
+dt { font-weight: 700; }
+dd { margin: 0; overflow-wrap: anywhere; }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 14px;
+  table-layout: fixed;
+}
+.lecture-folders {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+.pipeline-results {
+  margin: 0 0 16px;
+  padding: 12px;
+  border: 1px solid #d8e0e7;
+  border-radius: 6px;
+  background: #f8fafb;
+}
+.pipeline-results > summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  font-weight: 700;
+}
+.history-count {
+  color: #526574;
+  font-size: 13px;
+  font-weight: 500;
+}
+.result-list { display: grid; gap: 12px; margin-top: 12px; }
+.lecture-results {
+  padding-top: 10px;
+  border-top: 1px solid #e1e7ec;
+}
+.lecture-results h3 { margin: 0 0 6px; font-size: 15px; }
+.result-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) max-content minmax(140px, 2fr);
+  gap: 10px;
+  align-items: center;
+  padding: 5px 0;
+}
+.result-stage { color: #526574; font-size: 13px; text-transform: capitalize; }
+.result-status {
+  border-radius: 4px;
+  padding: 3px 7px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.result-status.complete, .result-status.skipped { background: #e7f6ee; color: #0b6e4f; }
+.result-status.unavailable { background: #fff6df; color: #7a4b00; }
+.result-status.failed { background: #fff1ef; color: #8f1d12; }
+.result-error, .result-muted {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.result-error { color: #8f1d12; }
+.result-muted { color: #526574; }
+.lecture-folder {
+  border: 1px solid #d8e0e7;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.lecture-folder summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  background: #f3f6f8;
+  font-weight: 700;
+  cursor: pointer;
+}
+.lecture-folder-name { min-width: 0; overflow-wrap: anywhere; }
+.topic-select-button {
+  min-height: 30px;
+  margin-left: auto;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+.lecture-folder[open] summary { border-bottom: 1px solid #d8e0e7; }
+.lecture-folder table { margin-top: 0; }
+.lecture-count {
+  color: #526574;
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.empty-state {
+  padding: 18px 0;
+  color: #526574;
+}
+th, td {
+  border-bottom: 1px solid #e1e7ec;
+  padding: 8px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+th:first-child, td:first-child { width: 34px; }
+th:nth-child(2), td:nth-child(2) { width: 64px; }
+th:nth-child(4), td:nth-child(4) { width: 96px; }
+th:last-child, td:last-child { width: 72px; }
+@media (max-width: 800px) {
+  main { grid-template-columns: minmax(0, 1fr); }
+  .settings-columns { grid-template-columns: minmax(0, 1fr); gap: 22px; }
+  .app-config-form { grid-template-columns: 1fr; }
+  .app-config-form > span:empty { display: none; }
+  .folder-control { flex-wrap: wrap; }
+  .folder-control input { flex-basis: 100%; }
+  .result-row { grid-template-columns: 1fr max-content; }
+  .result-row a, .result-error, .result-muted { grid-column: 1 / -1; }
+  .lecture-folder summary { flex-wrap: wrap; }
+  .topic-select-button { margin-left: 0; }
+  .lecture-folder table, .lecture-folder tbody { display: block; }
+  .lecture-folder thead { display: none; }
+  .lecture-folder tr {
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr);
+    gap: 4px 10px;
+    padding: 11px 12px;
+    border-bottom: 1px solid #e1e7ec;
+  }
+  .lecture-folder td {
+    display: block;
+    width: auto !important;
+    padding: 0;
+    border: 0;
+  }
+  .lecture-folder td:first-child { grid-row: 1 / 5; padding-top: 2px; }
+  .lecture-folder td:nth-child(2)::before { content: "Lecture "; font-weight: 700; }
+  .lecture-folder td:nth-child(3) { font-weight: 700; }
+  .lecture-folder td:nth-child(4)::before { content: "Date "; font-weight: 700; }
+  .lecture-folder td:nth-child(5)::before { content: "Echo360 "; font-weight: 700; }
+}
