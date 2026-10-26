@@ -29,7 +29,7 @@ from app.notebooklm.exporter import export_notebooklm
 from app.obsidian.exporter import export_ai_note, obsidian_note_markdown, save_obsidian_note
 from app.services.manifest import export_topic_manifest
 from app.transcripts.cleaner import clean_plain_transcript, clean_vtt
-from app.transcripts.whisper import transcribe_with_mlx_whisper
+from app.transcripts.whisper import transcribe_with_local_whisper
 from app.utils import expand_path, lecture_stem, number_for_position, sha256_text
 
 logger = logging.getLogger(__name__)
@@ -566,7 +566,7 @@ class PipelineService:
         elif options.whisper_fallback and self.settings.transcripts.whisper_enabled:
             video = topic_dir / f"{self._output_stem(context)}.mp4"
             whisper_path = topic_dir / f"{self._output_stem(context)}.whisper.txt"
-            transcribe_with_mlx_whisper(
+            transcribe_with_local_whisper(
                 video,
                 whisper_path,
                 self.settings.transcripts.whisper_command,

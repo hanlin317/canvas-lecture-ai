@@ -6,6 +6,32 @@ immutable.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-26
+
+### Added
+
+- A Windows 10/11 x64 application build with a per-user Inno Setup installer, Start menu entry,
+  optional desktop shortcut, bundled Chromium, FFmpeg, and document exporters.
+- Faster Whisper local transcription on Windows, using NVIDIA CUDA when available and an efficient
+  CPU fallback otherwise.
+- Native Windows folder selection, Explorer integration, and Windows Credential Manager storage
+  for AI provider keys.
+
+### Changed
+
+- Made application data paths, onboarding text, local transcription settings, and packaged runtime
+  checks platform-aware while preserving existing macOS behavior.
+- Extended automatic updates and signed update manifests to select and verify the correct macOS or
+  Windows installer.
+- Expanded the release workflow to test on Linux and build and verify both native desktop packages
+  before publishing an immutable release.
+
+### Security
+
+- Windows API keys are stored in Windows Credential Manager rather than configuration files.
+- Windows installer downloads are verified against the SHA-256 digest in the signed update
+  manifest before installation.
+
 ## [0.4.0] - 2026-10-26
 
 ### Added
@@ -63,7 +89,8 @@ immutable.
 - Local SQLite state, processing history, course grouping, and a browser-based management interface.
 - Apple Silicon DMG packaging and the first GitHub release workflow.
 
-[Unreleased]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/hanlin317/canvas-lecture-ai/releases/tag/v0.2.0

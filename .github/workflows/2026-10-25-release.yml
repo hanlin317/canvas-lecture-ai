@@ -1,4 +1,4 @@
-name: Build macOS release
+name: Build desktop release
 
 on:
   workflow_dispatch:
@@ -10,8 +10,10 @@ permissions:
   contents: write
 
 jobs:
-  test-and-release:
-    runs-on: macos-14
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -60,46 +62,144 @@ jobs:
             fi
             python scripts/2026-10-26-release-notes.py "${NOTES_ARGS[@]}"
           fi
+      - name: Upload release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/release-notes.md
+
+  build-macos:
+    needs: validate
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
       - name: Build arm64 DMG
         run: bash 2026-10-25-build-macos.sh
-      - name: Verify packaged runtime
+      - name: Verify packaged macOS runtime
         run: |
           DLM_DATA_DIR="$RUNNER_TEMP/dlm-self-check" \
             'dist/Canvas Lecture AI.app/Contents/MacOS/Canvas Lecture AI' \
             self-check --output "$RUNNER_TEMP/dlm-self-check.json"
-          python -c 'import json, os; data=json.load(open(os.environ["RUNNER_TEMP"] + "/dlm-self-check.json")); assert data["status"] == "ok" and data["mlx_whisper"] and all(data["document_exporters"].values())'
+          python -c 'import json, os; data=json.load(open(os.environ["RUNNER_TEMP"] + "/dlm-self-check.json")); assert data["status"] == "ok" and data["local_whisper"] and data["whisper_engine"] == "mlx" and all(data["document_exporters"].values())'
           codesign --verify --deep --strict 'dist/Canvas Lecture AI.app'
           APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 'dist/Canvas Lecture AI.app/Contents/Info.plist')"
-          test "$APP_VERSION" = "${{ steps.release.outputs.version }}"
+          test "$APP_VERSION" = "${{ needs.validate.outputs.version }}"
           cd dist && shasum -a 256 -c *.dmg.sha256
-      - name: Sign update manifest
-        env:
-          UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY }}
-        run: |
-          VERSION="${{ steps.release.outputs.version }}"
-          DMG_NAME="Canvas-Lecture-AI-v${VERSION}-arm64.dmg"
-          MANIFEST_NAME="Canvas-Lecture-AI-v${VERSION}-update.json"
-          export VERSION DMG_NAME MANIFEST_NAME
-          export DMG_SHA256="$(shasum -a 256 "dist/$DMG_NAME" | awk '{print $1}')"
-          export DMG_SIZE="$(stat -f '%z' "dist/$DMG_NAME")"
-          python -c 'import json,os,pathlib; version=os.environ["VERSION"]; repo=os.environ["GITHUB_REPOSITORY"]; name=os.environ["DMG_NAME"]; data={"app_name":"Canvas Lecture AI.app","dmg_url":f"https://github.com/{repo}/releases/download/v{version}/{name}","minimum_macos":"14.0","release_url":f"https://github.com/{repo}/releases/tag/v{version}","sha256":os.environ["DMG_SHA256"],"size":int(os.environ["DMG_SIZE"]),"version":version}; pathlib.Path("dist",os.environ["MANIFEST_NAME"]).write_text(json.dumps(data,sort_keys=True,separators=(",",":")),encoding="utf-8")'
-          python -c 'import os,pathlib; from cryptography.hazmat.primitives import serialization; key=serialization.load_pem_private_key(os.environ["UPDATE_SIGNING_PRIVATE_KEY"].encode(),password=None); manifest=pathlib.Path("dist",os.environ["MANIFEST_NAME"]); manifest.with_suffix(manifest.suffix+".sig").write_bytes(key.sign(manifest.read_bytes()))'
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: canvas-lecture-ai-v${{ steps.release.outputs.version }}-arm64
+          name: canvas-lecture-ai-v${{ needs.validate.outputs.version }}-macos-arm64
           path: |
             dist/*.dmg
-            dist/*.sha256
-            dist/*-update.json
-            dist/*-update.json.sig
+            dist/*.dmg.sha256
+
+  build-windows:
+    needs: validate
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress --yes
+      - name: Build Windows x64 installer
+        shell: pwsh
+        run: ./2026-10-26-build-windows.ps1
+      - name: Verify packaged Windows runtime
+        shell: pwsh
+        run: |
+          $env:DLM_DATA_DIR = Join-Path $env:RUNNER_TEMP "dlm-self-check"
+          & "dist\Canvas Lecture AI\Canvas Lecture AI.exe" self-check --output "$env:RUNNER_TEMP\dlm-self-check.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $data = Get-Content "$env:RUNNER_TEMP\dlm-self-check.json" | ConvertFrom-Json
+          if ($data.status -ne "ok" -or -not $data.local_whisper -or $data.whisper_engine -ne "faster-whisper") { exit 1 }
+          if (-not $data.document_exporters.docx -or -not $data.document_exporters.markdown_it -or -not $data.document_exporters.reportlab) { exit 1 }
+          Get-Content "dist\Canvas-Lecture-AI-v${{ needs.validate.outputs.version }}-windows-x64-setup.exe.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: canvas-lecture-ai-v${{ needs.validate.outputs.version }}-windows-x64
+          path: |
+            dist/*-windows-x64-setup.exe
+            dist/*-windows-x64-setup.exe.sha256
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [validate, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install manifest signing dependency
+        run: python -m pip install cryptography
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: canvas-lecture-ai-v*
+          path: release-dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes
+      - name: Create and sign cross-platform update manifest
+        env:
+          UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          from cryptography.hazmat.primitives import serialization
+
+          root = Path("release-dist")
+          version = os.environ["VERSION"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          mac = root / f"Canvas-Lecture-AI-v{version}-arm64.dmg"
+          windows = root / f"Canvas-Lecture-AI-v{version}-windows-x64-setup.exe"
+
+          def asset(path, **extra):
+              return {
+                  "download_url": f"https://github.com/{repo}/releases/download/v{version}/{path.name}",
+                  "file_name": path.name,
+                  "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                  "size": path.stat().st_size,
+                  **extra,
+              }
+
+          manifest = {
+              "platforms": {
+                  "macos-arm64": asset(mac, app_name="Canvas Lecture AI.app", installer_kind="dmg", minimum_os="14.0"),
+                  "windows-x64": asset(windows, app_name="Canvas Lecture AI", installer_kind="inno", minimum_os="10"),
+              },
+              "release_url": f"https://github.com/{repo}/releases/tag/v{version}",
+              "version": version,
+          }
+          path = root / f"Canvas-Lecture-AI-v{version}-update.json"
+          path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+          key = serialization.load_pem_private_key(
+              os.environ["UPDATE_SIGNING_PRIVATE_KEY"].encode(), password=None
+          )
+          path.with_suffix(path.suffix + ".sig").write_bytes(key.sign(path.read_bytes()))
+          PY
+      - name: Upload signed release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: canvas-lecture-ai-v${{ needs.validate.outputs.version }}-desktop-release
+          path: release-dist/*
       - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            dist/*.dmg dist/*.sha256 dist/*-update.json dist/*-update.json.sig \
-            --title "Canvas Lecture AI v${{ steps.release.outputs.version }}" \
-            --notes-file "$RUNNER_TEMP/release-notes.md" \
+            release-dist/* \
+            --title "Canvas Lecture AI v${{ needs.validate.outputs.version }}" \
+            --notes-file release-notes/release-notes.md \
             --verify-tag

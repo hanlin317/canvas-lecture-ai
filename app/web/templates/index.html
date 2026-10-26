@@ -218,7 +218,10 @@
         </div>
 
         <label for="whisper-model">Whisper model</label>
-        <input id="whisper-model" name="whisper_model" value="{{ settings.transcripts.whisper_model }}">
+        <select id="whisper-model" name="whisper_model">
+          <option value="large-v3-turbo" {% if 'large-v3-turbo' in settings.transcripts.whisper_model %}selected{% endif %}>Large v3 Turbo — recommended</option>
+          <option value="medium" {% if 'medium' in settings.transcripts.whisper_model %}selected{% endif %}>Medium — faster, less accurate</option>
+        </select>
 
         <span></span>
         <label class="checkbox-setting"><input type="checkbox" name="whisper_enabled" {% if settings.transcripts.whisper_enabled %}checked{% endif %}> Enable Whisper fallback</label>
@@ -229,6 +232,7 @@
 
       <div class="api-settings">
       <h3>API keys</h3>
+      <p class="settings-note">Keys are stored securely in {{ credential_store }}.</p>
       <form method="post" action="/settings/api-key" class="key-form">
         <input type="hidden" name="course_code" value="{{ selected_course.id if selected_course else '' }}">
         <label for="key-provider">Provider</label>
@@ -246,7 +250,7 @@
         <li><span>{{ provider.label }}</span><strong>{{ provider.key_status }}</strong></li>
         {% endfor %}
       </ul>
-      <div class="tool-status">Whisper command: {{ settings.transcripts.whisper_command }} ({{ 'available' if whisper_available else 'missing' }})</div>
+      <div class="tool-status">{{ whisper_name }}: {{ 'available' if whisper_available else 'missing' }}{% if whisper_engine %} ({{ whisper_engine }}){% endif %}</div>
       </div>
       </div>
     </details>

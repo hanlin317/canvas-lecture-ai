@@ -110,7 +110,7 @@
         <div id="setup-api-key-group" class="onboarding-field-group">
           <label for="setup-api-key">API key <span>Optional now</span></label>
           <input id="setup-api-key" name="api_key" type="password" autocomplete="off" placeholder="Leave blank to keep the saved key">
-          <small class="field-note">Stored securely in macOS Keychain. Current status: <span id="setup-key-status"></span>.</small>
+          <small class="field-note">Stored securely in {{ credential_store }}. Current status: <span id="setup-key-status"></span>.</small>
         </div>
 
         <label for="setup-note-length">Default note length</label>
@@ -136,14 +136,14 @@
       <p class="onboarding-lead">Official Echo360 transcripts are used first. Local Whisper is the fallback when a recording has no transcript.</p>
       <form method="post" action="/setup/transcription" class="onboarding-form">
         <div class="capability-status {{ 'available' if whisper_available else 'unavailable' }}">
-          <strong>Local MLX Whisper {{ 'is ready' if whisper_available else 'is not installed' }}</strong>
-          <span>{{ 'Audio can be transcribed on this Mac without an API key.' if whisper_available else 'Official Echo360 transcripts still work. Install MLX Whisper later for local fallback transcription.' }}</span>
+          <strong>Local {{ whisper_name }} {{ 'is ready' if whisper_available else 'is not installed' }}</strong>
+          <span>{{ ('Audio can be transcribed on this ' ~ platform_name ~ ' computer without an API key.') if whisper_available else ('Official Echo360 transcripts still work. Install ' ~ whisper_name ~ ' later for local fallback transcription.') }}</span>
         </div>
         <label class="checkbox-setting transcription-toggle"><input type="checkbox" name="whisper_enabled" {% if settings.transcripts.whisper_enabled %}checked{% endif %}> Use local Whisper when an official transcript is unavailable</label>
         <label for="setup-whisper-model">Whisper model</label>
         <select id="setup-whisper-model" name="whisper_model">
-          <option value="mlx-community/whisper-large-v3-turbo-q4" {% if settings.transcripts.whisper_model == 'mlx-community/whisper-large-v3-turbo-q4' %}selected{% endif %}>Large v3 Turbo Q4 — recommended</option>
-          <option value="mlx-community/whisper-medium-mlx" {% if settings.transcripts.whisper_model == 'mlx-community/whisper-medium-mlx' %}selected{% endif %}>Medium — faster, less accurate</option>
+          <option value="large-v3-turbo" {% if 'large-v3-turbo' in settings.transcripts.whisper_model %}selected{% endif %}>Large v3 Turbo — recommended</option>
+          <option value="medium" {% if 'medium' in settings.transcripts.whisper_model %}selected{% endif %}>Medium — faster, less accurate</option>
         </select>
         <div class="onboarding-actions">
           <a class="secondary-button" href="/setup?step=3">Back</a>
@@ -153,7 +153,7 @@
 
       {% elif step == 5 %}
       <h2>Sign in to Canvas</h2>
-      <p class="onboarding-lead">Canvas opens in your normal browser so macOS Passwords, autofill, and university MFA remain available. Return here after Canvas finishes loading.</p>
+      <p class="onboarding-lead">Canvas opens in Chrome so your saved passwords, autofill, and university MFA remain available. Return here after Canvas finishes loading.</p>
       <div class="capability-status {{ 'available' if canvas_session_saved else '' }}">
         <strong>{{ 'Canvas login is already saved' if canvas_session_saved else 'Ready to open Canvas' }}</strong>
         <span>{{ 'You can continue or sign in again to refresh the session.' if canvas_session_saved else 'The app only keeps the browser session needed to access your courses.' }}</span>

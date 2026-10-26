@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 
 import httpx
@@ -165,6 +166,28 @@ def _run_security(arguments: list[str]) -> subprocess.CompletedProcess[str]:
         )
 
 
+def credential_store_label() -> str:
+    return "Windows Credential Manager" if sys.platform == "win32" else "macOS Keychain"
+
+
+def _load_windows_credential(name: str) -> str | None:
+    try:
+        import keyring
+
+        return keyring.get_password(KEYCHAIN_SERVICE, name)
+    except Exception as exc:
+        raise RuntimeError(f"Could not read {credential_store_label()}: {exc}") from exc
+
+
+def _save_windows_credential(name: str, value: str) -> None:
+    try:
+        import keyring
+
+        keyring.set_password(KEYCHAIN_SERVICE, name, value)
+    except Exception as exc:
+        raise RuntimeError(f"Could not save API key in {credential_store_label()}: {exc}") from exc
+
+
 def get_ai_provider_spec(name: str) -> AIProviderSpec:
     try:
         return next(spec for spec in AI_PROVIDER_SPECS if spec.name == name)
@@ -178,6 +201,8 @@ def api_key_status(name: str) -> str:
         return "not required"
     if os.environ.get(spec.api_key_env or ""):
         return "environment"
+    if sys.platform == "win32":
+        return credential_store_label() if _load_windows_credential(name) else "missing"
     for service in (KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE):
         result = _run_security(["find-generic-password", "-a", name, "-s", service])
         if result.returncode == 0:
@@ -192,6 +217,14 @@ def load_api_key(name: str) -> str | None:
     environment_key = os.environ.get(spec.api_key_env or "")
     if environment_key:
         return environment_key
+    if sys.platform == "win32":
+        key = _load_windows_credential(name)
+        if key:
+            return key
+        raise RuntimeError(
+            f"No {spec.label} API key is configured. Save one in AI Settings or set "
+            f"{spec.api_key_env}."
+        )
     for service in (KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE):
         result = _run_security(["find-generic-password", "-a", name, "-s", service, "-w"])
         key = result.stdout.strip()
@@ -209,6 +242,9 @@ def save_api_key(name: str, value: str) -> None:
         raise ValueError(f"{spec.label} does not require an API key.")
     if not key:
         raise ValueError("API key cannot be empty.")
+    if sys.platform == "win32":
+        _save_windows_credential(name, key)
+        return
     result = _run_security(
         [
             "add-generic-password",
@@ -222,7 +258,9 @@ def save_api_key(name: str, value: str) -> None:
         ]
     )
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "Could not save API key in macOS Keychain.")
+        raise RuntimeError(
+            result.stderr.strip() or f"Could not save API key in {credential_store_label()}."
+        )
 
 
 def _supports_note_generation(provider: str, model_id: str, payload: dict) -> bool:
