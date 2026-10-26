@@ -33,11 +33,17 @@ $env:PLAYWRIGHT_BROWSERS_PATH = $BrowserDir
     --workpath $WorkDir `
     (Join-Path $Root "2026-10-26-windows.spec")
 
+$IsccCommand = Get-Command "ISCC.exe" -ErrorAction SilentlyContinue
 $IsccCandidates = @(
-    "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
-    "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+    "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+    "$env:ChocolateyToolsLocation\InnoSetup\ISCC.exe"
 )
-$Iscc = $IsccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+$Iscc = if ($IsccCommand) {
+    $IsccCommand.Source
+} else {
+    $IsccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
 if (-not $Iscc) {
     throw "Inno Setup 6 is required. Install it from https://jrsoftware.org/isinfo.php."
 }
