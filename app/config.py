@@ -22,6 +22,9 @@ class AppConfig(BaseModel):
     port: int = 8017
     database_path: str = "local_data/dental_lecture_manager.sqlite3"
     log_path: str = "local_data/dental_lecture_manager.log"
+    # Existing installations predate onboarding, so they remain complete by default.
+    onboarding_complete: bool = True
+    onboarding_step: int = Field(default=1, ge=1, le=7)
 
 
 class CanvasConfig(BaseModel):
@@ -56,6 +59,7 @@ class TranscriptsConfig(BaseModel):
 
 
 class AIConfig(BaseModel):
+    enabled: bool = True
     provider: str = "openai"
     model: str = "gpt-4.1"
     temperature: float = 0.2
@@ -159,10 +163,13 @@ def prepare_runtime_environment() -> Path | None:
 
 def save_web_settings(values: dict[str, Any], path: str | Path | None = None) -> Settings:
     allowed = {
+        "app.onboarding_complete",
+        "app.onboarding_step",
         "canvas.base_url",
         "paths.download_root",
         "paths.notebooklm_staging_dir",
         "paths.obsidian_vault",
+        "ai.enabled",
         "ai.provider",
         "ai.model",
         "ai.note_length",
@@ -248,6 +255,8 @@ def _replace_toml_values(source: str, values: dict[str, Any]) -> str:
 def _toml_literal(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
     if isinstance(value, str):
         return json.dumps(value, ensure_ascii=True)
     raise TypeError(f"Unsupported TOML value: {type(value).__name__}")

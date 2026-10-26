@@ -49,6 +49,25 @@ ACTIVE_JOBS: dict[str, asyncio.Task] = {}
 UPDATE_PUBLIC_KEY_B64 = "/u/PyTFPDYT02PQQRIsNDXMLzvcFWgutkZvPKm/p1UI="
 UPDATE_STATE: dict[str, object] = {"status": "idle", "progress_percent": 0}
 UPDATE_TASK: asyncio.Task | None = None
+CANVAS_INSTITUTIONS = (
+    {
+        "id": "sydney",
+        "name": "University of Sydney",
+        "url": "https://canvas.sydney.edu.au",
+    },
+    {
+        "id": "uts",
+        "name": "University of Technology Sydney",
+        "url": "https://canvas.uts.edu.au",
+    },
+    {
+        "id": "melbourne",
+        "name": "University of Melbourne",
+        "url": "https://canvas.lms.unimelb.edu.au",
+    },
+    {"id": "monash", "name": "Monash University", "url": "https://lms.monash.edu"},
+    {"id": "rmit", "name": "RMIT University", "url": "https://rmit.instructure.com"},
+)
 
 
 def get_settings() -> Settings:
@@ -89,6 +108,14 @@ def validated_ai_model(provider_name: str, model: str, db: Database) -> str:
     if selected not in {item["id"] for item in models}:
         raise ValueError(f"{selected} is not an available model for {spec.label}.")
     return selected
+
+
+def selected_canvas_institution(canvas_url: str) -> str:
+    normalized = canvas_url.strip().rstrip("/")
+    return next(
+        (item["id"] for item in CANVAS_INSTITUTIONS if item["url"] == normalized),
+        "other",
+    )
 
 
 def _updates_dir() -> Path:
@@ -590,6 +617,11 @@ def redirect_home(**params: str) -> RedirectResponse:
     return RedirectResponse(f"/{suffix}", status_code=303)
 
 
+def redirect_setup(step: int, **params: str) -> RedirectResponse:
+    params = {"step": str(max(1, min(7, step))), **params}
+    return RedirectResponse(f"/setup?{urlencode(params)}", status_code=303)
+
+
 def selected_course_from_request(courses, request: Request):
     requested = request.query_params.get("course")
     if requested:
@@ -703,6 +735,8 @@ async def choose_directory(prompt: str) -> str | None:
 async def index(
     request: Request, settings: Settings = Depends(get_settings), db: Database = Depends(get_db)
 ) -> HTMLResponse:
+    if not settings.app.onboarding_complete:
+        return RedirectResponse("/setup", status_code=303)
     courses = db.list_courses()
     selected_course = selected_course_from_request(courses, request)
     topics = db.list_topics(selected_course.id) if selected_course and selected_course.id else []
@@ -807,6 +841,201 @@ async def index(
     )
 
 
+@router.get("/setup", response_class=HTMLResponse)
+async def onboarding(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    db: Database = Depends(get_db),
+) -> HTMLResponse:
+    requested_step = request.query_params.get("step")
+    try:
+        step = int(requested_step) if requested_step else settings.app.onboarding_step
+    except ValueError:
+        step = settings.app.onboarding_step
+    step = max(1, min(7, step))
+    canvas = CanvasClient(settings)
+    providers = []
+    for spec in AI_PROVIDER_SPECS:
+        models, _ = provider_models_for_display(spec.name, db)
+        providers.append(
+            {
+                "name": spec.name,
+                "label": spec.label,
+                "default_model": spec.default_model,
+                "models": models,
+                "requires_key": spec.requires_key,
+                "key_status": api_key_status(spec.name),
+            }
+        )
+    selected_provider = next(
+        (item for item in providers if item["name"] == settings.ai.provider), providers[0]
+    )
+    selected_model = settings.ai.model
+    if selected_model not in {item["id"] for item in selected_provider["models"]}:
+        selected_model = selected_provider["default_model"]
+    return templates.TemplateResponse(
+        request=request,
+        name="2026-10-26-onboarding.html",
+        context={
+            "request": request,
+            "settings": settings,
+            "step": step,
+            "providers": providers,
+            "canvas_institutions": CANVAS_INSTITUTIONS,
+            "selected_canvas_institution": selected_canvas_institution(
+                settings.canvas.base_url
+            ),
+            "provider_models": {item["name"]: item["models"] for item in providers},
+            "selected_provider": selected_provider["name"],
+            "selected_model": selected_model,
+            "canvas_session_saved": canvas.has_session(),
+            "courses": db.list_courses(),
+            "whisper_available": mlx_whisper_available(settings.transcripts.whisper_command),
+            "obsidian_vault_status": obsidian_vault_status(settings.paths.obsidian_vault),
+            "message": request.query_params.get("message"),
+            "error": request.query_params.get("error"),
+        },
+    )
+
+
+@router.post("/setup/advance")
+async def advance_onboarding(next_step: int = Form(default=1)) -> RedirectResponse:
+    step = max(1, min(7, next_step))
+    save_web_settings({"app.onboarding_complete": False, "app.onboarding_step": step})
+    return redirect_setup(step)
+
+
+@router.post("/setup/storage")
+async def save_onboarding_storage(
+    canvas_base_url: str = Form(default=""),
+    download_root: str = Form(default=""),
+    notebooklm_staging_dir: str = Form(default=""),
+    obsidian_vault: str = Form(default=""),
+) -> RedirectResponse:
+    try:
+        save_web_settings(
+            {
+                "canvas.base_url": validated_canvas_url(canvas_base_url),
+                "paths.download_root": validated_directory(
+                    download_root, "Download folder", create=True
+                ),
+                "paths.notebooklm_staging_dir": validated_directory(
+                    notebooklm_staging_dir, "NotebookLM sources folder", create=True
+                ),
+                "paths.obsidian_vault": validated_directory(
+                    obsidian_vault, "Obsidian vault", obsidian=True
+                ),
+                "app.onboarding_complete": False,
+                "app.onboarding_step": 3,
+            }
+        )
+    except Exception as exc:
+        logger.exception("Could not save onboarding storage settings")
+        return redirect_setup(2, error=str(exc))
+    return redirect_setup(3, message="Storage settings saved.")
+
+
+@router.post("/setup/ai")
+async def save_onboarding_ai(
+    ai_enabled: bool = Form(default=False),
+    ai_provider: str = Form(default="openai"),
+    ai_model: str = Form(default=""),
+    ai_note_length: str = Form(default="standard"),
+    ai_custom_instructions: str = Form(default=""),
+    api_key: str = Form(default=""),
+    settings: Settings = Depends(get_settings),
+    db: Database = Depends(get_db),
+) -> RedirectResponse:
+    try:
+        provider_name = settings.ai.provider
+        model = settings.ai.model
+        if ai_enabled:
+            provider = get_ai_provider_spec(ai_provider)
+            provider_name = provider.name
+            model = validated_ai_model(provider.name, ai_model, db)
+            if api_key.strip():
+                save_api_key(provider.name, api_key)
+        instructions = settings.ai.custom_instructions
+        if ai_enabled:
+            if ai_note_length not in NOTE_LENGTHS:
+                raise ValueError("Unknown default AI note length.")
+            instructions = ai_custom_instructions.strip()
+            if len(instructions) > 6000:
+                raise ValueError("Custom AI instructions must be 6,000 characters or fewer.")
+        else:
+            ai_note_length = settings.ai.note_length
+        save_web_settings(
+            {
+                "ai.enabled": ai_enabled,
+                "ai.provider": provider_name,
+                "ai.model": model,
+                "ai.note_length": ai_note_length,
+                "ai.custom_instructions": instructions,
+                "app.onboarding_complete": False,
+                "app.onboarding_step": 4,
+            }
+        )
+    except Exception as exc:
+        logger.exception("Could not save onboarding AI settings")
+        return redirect_setup(3, error=str(exc))
+    return redirect_setup(4, message="AI note settings saved.")
+
+
+@router.post("/setup/transcription")
+async def save_onboarding_transcription(
+    whisper_enabled: bool = Form(default=False),
+    whisper_model: str = Form(default=""),
+) -> RedirectResponse:
+    model = whisper_model.strip()
+    if whisper_enabled and not model:
+        return redirect_setup(4, error="Choose a Whisper model or turn local transcription off.")
+    save_web_settings(
+        {
+            "transcripts.whisper_enabled": whisper_enabled,
+            "transcripts.whisper_model": model or "mlx-community/whisper-large-v3-turbo-q4",
+            "app.onboarding_complete": False,
+            "app.onboarding_step": 5,
+        }
+    )
+    return redirect_setup(5, message="Transcription settings saved.")
+
+
+@router.post("/setup/login")
+async def onboarding_login(settings: Settings = Depends(get_settings)) -> RedirectResponse:
+    try:
+        await CanvasClient(settings).login()
+        save_web_settings({"app.onboarding_complete": False, "app.onboarding_step": 6})
+    except Exception as exc:
+        logger.exception("Canvas onboarding login failed")
+        return redirect_setup(5, error=str(exc))
+    return redirect_setup(6, message="Canvas login saved.")
+
+
+@router.post("/setup/sync")
+async def onboarding_sync_courses(
+    settings: Settings = Depends(get_settings), db: Database = Depends(get_db)
+) -> RedirectResponse:
+    try:
+        courses = await DiscoveryService(db, settings).sync_canvas_courses()
+        save_web_settings({"app.onboarding_complete": False, "app.onboarding_step": 7})
+    except Exception as exc:
+        logger.exception("Canvas onboarding course sync failed")
+        return redirect_setup(6, error=str(exc))
+    return redirect_setup(7, message=f"Found {len(courses)} Canvas course(s).")
+
+
+@router.post("/setup/finish")
+async def finish_onboarding() -> RedirectResponse:
+    save_web_settings({"app.onboarding_complete": True, "app.onboarding_step": 7})
+    return redirect_home(message="Setup complete. Canvas Lecture AI is ready.")
+
+
+@router.post("/setup/restart")
+async def restart_onboarding() -> RedirectResponse:
+    save_web_settings({"app.onboarding_complete": False, "app.onboarding_step": 1})
+    return redirect_setup(1)
+
+
 @router.post("/login")
 async def login(settings: Settings = Depends(get_settings)) -> RedirectResponse:
     try:
@@ -840,6 +1069,7 @@ async def update_app_settings(
     download_root: str = Form(default=""),
     notebooklm_staging_dir: str = Form(default=""),
     obsidian_vault: str = Form(default=""),
+    ai_enabled: bool = Form(default=False),
     ai_provider: str = Form(default="openai"),
     ai_model: str = Form(default=""),
     ai_note_length: str = Form(default="standard"),
@@ -850,19 +1080,28 @@ async def update_app_settings(
     whisper_enabled: bool = Form(default=False),
     whisper_model: str = Form(default=""),
     course_code: str = Form(default=""),
+    settings: Settings = Depends(get_settings),
     db: Database = Depends(get_db),
 ) -> RedirectResponse:
     try:
-        provider = get_ai_provider_spec(ai_provider)
-        model = validated_ai_model(provider.name, ai_model, db)
+        provider_name = settings.ai.provider
+        model = settings.ai.model
+        if ai_enabled:
+            provider = get_ai_provider_spec(ai_provider)
+            provider_name = provider.name
+            model = validated_ai_model(provider.name, ai_model, db)
         whisper = whisper_model.strip()
         if whisper_enabled and not whisper:
             raise ValueError("Whisper model is required when Whisper is enabled.")
-        if ai_note_length not in NOTE_LENGTHS:
-            raise ValueError("Unknown default AI note length.")
-        custom_instructions = ai_custom_instructions.strip()
-        if len(custom_instructions) > 6000:
-            raise ValueError("Custom AI instructions must be 6,000 characters or fewer.")
+        custom_instructions = settings.ai.custom_instructions
+        if ai_enabled:
+            if ai_note_length not in NOTE_LENGTHS:
+                raise ValueError("Unknown default AI note length.")
+            custom_instructions = ai_custom_instructions.strip()
+            if len(custom_instructions) > 6000:
+                raise ValueError("Custom AI instructions must be 6,000 characters or fewer.")
+        else:
+            ai_note_length = settings.ai.note_length
         save_web_settings(
             {
                 "canvas.base_url": validated_canvas_url(canvas_base_url),
@@ -875,7 +1114,8 @@ async def update_app_settings(
                 "paths.obsidian_vault": validated_directory(
                     obsidian_vault, "Obsidian vault", obsidian=True
                 ),
-                "ai.provider": provider.name,
+                "ai.enabled": ai_enabled,
+                "ai.provider": provider_name,
                 "ai.model": model,
                 "ai.note_length": ai_note_length,
                 "ai.custom_instructions": custom_instructions,
@@ -1047,19 +1287,25 @@ async def pipeline(
             error="Select at least one lecture before running the pipeline.", course=course_code
         )
     try:
-        provider_spec = get_ai_provider_spec(ai_provider)
-        selected_model = validated_ai_model(provider_spec.name, ai_model, db)
-        if ai_note_format not in {"markdown", "pdf", "docx"}:
-            raise ValueError(f"Unknown AI note format: {ai_note_format}")
-        if ai_note_length not in NOTE_LENGTHS:
-            raise ValueError(f"Unknown AI note length: {ai_note_length}")
+        if ai_notes and not settings.ai.enabled:
+            raise ValueError("AI notes are disabled. Enable them in Settings before continuing.")
+        provider_spec = get_ai_provider_spec(settings.ai.provider)
+        selected_model = settings.ai.model
+        if ai_notes:
+            provider_spec = get_ai_provider_spec(ai_provider)
+            selected_model = validated_ai_model(provider_spec.name, ai_model, db)
+            if ai_note_format not in {"markdown", "pdf", "docx"}:
+                raise ValueError(f"Unknown AI note format: {ai_note_format}")
+            if ai_note_length not in NOTE_LENGTHS:
+                raise ValueError(f"Unknown AI note length: {ai_note_length}")
         custom_instructions = ai_custom_instructions.strip()
         if len(custom_instructions) > 6000:
             raise ValueError("Custom AI instructions must be 6,000 characters or fewer.")
     except ValueError as exc:
         return redirect_home(error=str(exc), course=course_code)
-    settings.ai.provider = provider_spec.name
-    settings.ai.model = selected_model
+    if ai_notes:
+        settings.ai.provider = provider_spec.name
+        settings.ai.model = selected_model
     options = PipelineOptions(
         download_video=download_video,
         download_slides=download_slides,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -217,6 +218,74 @@ def test_config_parsing(tmp_path: Path) -> None:
     assert settings.canvas.base_url == "https://canvas.example"
 
 
+def test_release_notes_are_extracted_from_matching_dated_version(tmp_path: Path) -> None:
+    changelog = tmp_path / "changelog.md"
+    output = tmp_path / "notes.md"
+    changelog.write_text(
+        "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- Future.\n\n"
+        "## [1.2.0] - 2026-10-26\n\n### Added\n\n- Released feature.\n\n"
+        "## [1.1.0] - 2026-10-20\n\n### Fixed\n\n- Earlier fix.\n",
+        encoding="utf-8",
+    )
+    script = Path(__file__).parents[1] / "scripts" / "2026-10-26-release-notes.py"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--changelog",
+            str(changelog),
+            "--version",
+            "1.2.0",
+            "--repository",
+            "owner/project",
+            "--previous-version",
+            "1.1.0",
+            "--output",
+            str(output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    notes = output.read_text(encoding="utf-8")
+    assert result.returncode == 0
+    assert "Released feature" in notes
+    assert "Earlier fix" not in notes
+    assert "owner/project/compare/v1.1.0...v1.2.0" in notes
+    assert "### Installation" in notes
+
+
+def test_release_notes_reject_missing_version(tmp_path: Path) -> None:
+    changelog = tmp_path / "changelog.md"
+    output = tmp_path / "notes.md"
+    changelog.write_text("# Changelog\n\n## [Unreleased]\n", encoding="utf-8")
+    script = Path(__file__).parents[1] / "scripts" / "2026-10-26-release-notes.py"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--changelog",
+            str(changelog),
+            "--version",
+            "9.9.9",
+            "--repository",
+            "owner/project",
+            "--output",
+            str(output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "does not contain a release entry for 9.9.9" in result.stderr
+    assert not output.exists()
+
+
 def test_web_settings_update_preserves_comments_and_unrelated_values(tmp_path: Path) -> None:
     config = tmp_path / "config.toml"
     config.write_text(
@@ -231,6 +300,8 @@ def test_web_settings_update_preserves_comments_and_unrelated_values(tmp_path: P
 
     save_web_settings(
         {
+            "app.onboarding_step": 4,
+            "ai.enabled": False,
             "canvas.base_url": "https://canvas.example.edu",
             "paths.obsidian_vault": "/tmp/My Vault",
             "ai.provider": "anthropic",
@@ -246,6 +317,8 @@ def test_web_settings_update_preserves_comments_and_unrelated_values(tmp_path: P
     assert "# Keep this comment" in text
     assert "# downloads" in text
     assert settings.downloads.concurrency == 7
+    assert settings.app.onboarding_step == 4
+    assert settings.ai.enabled is False
     assert settings.canvas.base_url == "https://canvas.example.edu"
     assert settings.paths.obsidian_vault == "/tmp/My Vault"
     assert settings.ai.provider == "anthropic"

@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Set up Canvas Lecture AI</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20261026-3">
+</head>
+<body class="onboarding-body">
+  <header class="onboarding-header">
+    <div>
+      <h1>Canvas Lecture AI</h1>
+      <p>Lecture Downloader &amp; AI Notes Generator</p>
+    </div>
+    {% if settings.app.onboarding_complete %}<a class="header-link" href="/">Exit setup</a>{% endif %}
+  </header>
+
+  <main class="onboarding-main">
+    <nav class="onboarding-progress" aria-label="Setup progress">
+      {% for number, label in [(1, 'Welcome'), (2, 'Storage'), (3, 'AI notes'), (4, 'Transcript'), (5, 'Canvas'), (6, 'Courses'), (7, 'Ready')] %}
+      <a href="/setup?step={{ number }}" class="onboarding-progress-step {{ 'current' if step == number else ('done' if step > number else '') }}" {% if step == number %}aria-current="step"{% endif %}>
+        <strong>{{ number }}</strong><span>{{ label }}</span>
+      </a>
+      {% endfor %}
+    </nav>
+
+    {% if error %}<section class="alert error">{{ error }}</section>{% endif %}
+    {% if message %}<section class="alert message">{{ message }}</section>{% endif %}
+
+    <section class="onboarding-panel">
+      <div class="onboarding-step-count">Step {{ step }} of 7</div>
+
+      {% if step == 1 %}
+      <h2>Let’s get your lectures organised</h2>
+      <p class="onboarding-lead">This guide connects Canvas, chooses where files go, and prepares optional AI notes. Your passwords and API keys are not stored in the project.</p>
+      <div class="onboarding-feature-list">
+        <div><strong>Download</strong><span>Recordings, slides, and transcripts from Echo360.</span></div>
+        <div><strong>Generate</strong><span>Structured study notes in Markdown, Word, or PDF.</span></div>
+        <div><strong>Export</strong><span>Send sources to NotebookLM and notes to Obsidian.</span></div>
+      </div>
+      <form method="post" action="/setup/advance" class="onboarding-actions end">
+        <input type="hidden" name="next_step" value="2">
+        <button type="submit">Start setup</button>
+      </form>
+
+      {% elif step == 2 %}
+      <h2>Choose Canvas and storage</h2>
+      <p class="onboarding-lead">Set the university Canvas address and decide where downloaded material should be saved.</p>
+      <form method="post" action="/setup/storage" class="onboarding-form">
+        <label for="university-search">Find your university</label>
+        <input id="university-search" type="search" placeholder="Search universities" autocomplete="off">
+
+        <label for="setup-university">University</label>
+        <select id="setup-university">
+          {% for institution in canvas_institutions %}
+          <option value="{{ institution.id }}" data-url="{{ institution.url }}" {% if institution.id == selected_canvas_institution %}selected{% endif %}>{{ institution.name }}</option>
+          {% endfor %}
+          <option value="other" {% if selected_canvas_institution == 'other' %}selected{% endif %}>Other university</option>
+        </select>
+
+        <label for="setup-canvas-url">Canvas address <span>Required</span></label>
+        <input id="setup-canvas-url" name="canvas_base_url" type="url" value="{{ settings.canvas.base_url }}" placeholder="https://canvas.your-university.edu" required>
+        <small id="canvas-address-note" class="field-note"></small>
+
+        <label for="setup-download-root">Lecture downloads <span>Required</span></label>
+        <div class="folder-control">
+          <input id="setup-download-root" name="download_root" value="{{ settings.paths.download_root }}" required>
+          <button type="button" class="secondary-button" data-folder-field="download_root" data-folder-target="setup-download-root">Choose</button>
+        </div>
+
+        <label for="setup-notebooklm">NotebookLM sources <span>Required</span></label>
+        <div class="folder-control">
+          <input id="setup-notebooklm" name="notebooklm_staging_dir" value="{{ settings.paths.notebooklm_staging_dir }}" required>
+          <button type="button" class="secondary-button" data-folder-field="notebooklm_staging_dir" data-folder-target="setup-notebooklm">Choose</button>
+        </div>
+
+        <label for="setup-obsidian">Obsidian vault <span>Optional</span></label>
+        <div class="folder-control">
+          <input id="setup-obsidian" name="obsidian_vault" value="{{ settings.paths.obsidian_vault }}" placeholder="Leave blank if you do not use Obsidian">
+          <button type="button" class="secondary-button" data-folder-field="obsidian_vault" data-folder-target="setup-obsidian">Choose</button>
+        </div>
+        <small class="field-note">{{ obsidian_vault_status.text }}</small>
+
+        <div class="onboarding-actions">
+          <a class="secondary-button" href="/setup?step=1">Back</a>
+          <button type="submit">Save and continue</button>
+        </div>
+      </form>
+
+      {% elif step == 3 %}
+      <h2>Configure AI notes</h2>
+      <p class="onboarding-lead">Lecture downloads and transcripts work without AI. You can enable AI notes later from Settings.</p>
+      <form method="post" action="/setup/ai" class="onboarding-form">
+        <fieldset class="ai-choice" aria-label="Use AI notes">
+          <label><input type="radio" name="ai_enabled" value="false" {% if not settings.ai.enabled %}checked{% endif %}> <span><strong>Do not use AI notes</strong>Download lectures, slides, transcripts, and NotebookLM sources only.</span></label>
+          <label><input type="radio" name="ai_enabled" value="true" {% if settings.ai.enabled %}checked{% endif %}> <span><strong>Use AI notes</strong>Generate structured study notes with an AI provider.</span></label>
+        </fieldset>
+
+        <div id="setup-ai-fields" class="onboarding-form nested-form" {% if not settings.ai.enabled %}hidden{% endif %}>
+        <label for="setup-ai-provider">AI provider</label>
+        <select id="setup-ai-provider" name="ai_provider">
+          {% for provider in providers %}<option value="{{ provider.name }}" data-default-model="{{ provider.default_model }}" data-requires-key="{{ 'true' if provider.requires_key else 'false' }}" {% if provider.name == selected_provider %}selected{% endif %}>{{ provider.label }}</option>{% endfor %}
+        </select>
+
+        <label for="setup-ai-model">Model</label>
+        <select id="setup-ai-model" name="ai_model" required>
+          {% for provider in providers if provider.name == selected_provider %}{% for model in provider.models %}<option value="{{ model.id }}" {% if model.id == selected_model %}selected{% endif %}>{{ model.label }}</option>{% endfor %}{% endfor %}
+        </select>
+
+        <div id="setup-api-key-group" class="onboarding-field-group">
+          <label for="setup-api-key">API key <span>Optional now</span></label>
+          <input id="setup-api-key" name="api_key" type="password" autocomplete="off" placeholder="Leave blank to keep the saved key">
+          <small class="field-note">Stored securely in macOS Keychain. Current status: <span id="setup-key-status"></span>.</small>
+        </div>
+
+        <label for="setup-note-length">Default note length</label>
+        <select id="setup-note-length" name="ai_note_length">
+          <option value="concise" {% if settings.ai.note_length == 'concise' %}selected{% endif %}>Concise</option>
+          <option value="standard" {% if settings.ai.note_length == 'standard' %}selected{% endif %}>Standard</option>
+          <option value="detailed" {% if settings.ai.note_length == 'detailed' %}selected{% endif %}>Detailed</option>
+          <option value="comprehensive" {% if settings.ai.note_length == 'comprehensive' %}selected{% endif %}>Comprehensive</option>
+        </select>
+
+        <label for="setup-ai-instructions">Extra instructions <span>Optional</span></label>
+        <textarea id="setup-ai-instructions" name="ai_custom_instructions" rows="5" maxlength="6000" placeholder="For example: Emphasise clinical reasoning and examination findings.">{{ settings.ai.custom_instructions }}</textarea>
+        </div>
+
+        <div class="onboarding-actions">
+          <a class="secondary-button" href="/setup?step=2">Back</a>
+          <button type="submit">Save and continue</button>
+        </div>
+      </form>
+
+      {% elif step == 4 %}
+      <h2>Set up transcription</h2>
+      <p class="onboarding-lead">Official Echo360 transcripts are used first. Local Whisper is the fallback when a recording has no transcript.</p>
+      <form method="post" action="/setup/transcription" class="onboarding-form">
+        <div class="capability-status {{ 'available' if whisper_available else 'unavailable' }}">
+          <strong>Local MLX Whisper {{ 'is ready' if whisper_available else 'is not installed' }}</strong>
+          <span>{{ 'Audio can be transcribed on this Mac without an API key.' if whisper_available else 'Official Echo360 transcripts still work. Install MLX Whisper later for local fallback transcription.' }}</span>
+        </div>
+        <label class="checkbox-setting transcription-toggle"><input type="checkbox" name="whisper_enabled" {% if settings.transcripts.whisper_enabled %}checked{% endif %}> Use local Whisper when an official transcript is unavailable</label>
+        <label for="setup-whisper-model">Whisper model</label>
+        <select id="setup-whisper-model" name="whisper_model">
+          <option value="mlx-community/whisper-large-v3-turbo-q4" {% if settings.transcripts.whisper_model == 'mlx-community/whisper-large-v3-turbo-q4' %}selected{% endif %}>Large v3 Turbo Q4 — recommended</option>
+          <option value="mlx-community/whisper-medium-mlx" {% if settings.transcripts.whisper_model == 'mlx-community/whisper-medium-mlx' %}selected{% endif %}>Medium — faster, less accurate</option>
+        </select>
+        <div class="onboarding-actions">
+          <a class="secondary-button" href="/setup?step=3">Back</a>
+          <button type="submit">Save and continue</button>
+        </div>
+      </form>
+
+      {% elif step == 5 %}
+      <h2>Sign in to Canvas</h2>
+      <p class="onboarding-lead">Canvas opens in your normal browser so macOS Passwords, autofill, and university MFA remain available. Return here after Canvas finishes loading.</p>
+      <div class="capability-status {{ 'available' if canvas_session_saved else '' }}">
+        <strong>{{ 'Canvas login is already saved' if canvas_session_saved else 'Ready to open Canvas' }}</strong>
+        <span>{{ 'You can continue or sign in again to refresh the session.' if canvas_session_saved else 'The app only keeps the browser session needed to access your courses.' }}</span>
+      </div>
+      <form method="post" action="/setup/login" class="onboarding-actions">
+        <a class="secondary-button" href="/setup?step=4">Back</a>
+        <button type="submit">{{ 'Refresh Canvas login' if canvas_session_saved else 'Open Canvas login' }}</button>
+      </form>
+      {% if canvas_session_saved %}
+      <form method="post" action="/setup/advance" class="onboarding-skip">
+        <input type="hidden" name="next_step" value="6"><button type="submit" class="text-button">Continue with saved login</button>
+      </form>
+      {% endif %}
+
+      {% elif step == 6 %}
+      <h2>Find your Canvas courses</h2>
+      <p class="onboarding-lead">Syncing reads your current and saved Canvas courses. It does not download lectures yet.</p>
+      <div class="capability-status {{ 'available' if canvas_session_saved else 'unavailable' }}">
+        <strong>{{ 'Canvas is connected' if canvas_session_saved else 'Canvas login is required' }}</strong>
+        <span>{% if courses %}{{ courses|length }} course(s) are currently saved.{% elif canvas_session_saved %}No courses have been synced yet.{% else %}Go back and complete the Canvas login first.{% endif %}</span>
+      </div>
+      <form method="post" action="/setup/sync" class="onboarding-actions">
+        <a class="secondary-button" href="/setup?step=5">Back</a>
+        <button type="submit" {% if not canvas_session_saved %}disabled{% endif %}>Sync Canvas courses</button>
+      </form>
+      <form method="post" action="/setup/advance" class="onboarding-skip">
+        <input type="hidden" name="next_step" value="7"><button type="submit" class="text-button">Skip for now</button>
+      </form>
+
+      {% else %}
+      <h2>You’re ready to begin</h2>
+      <p class="onboarding-lead">Setup is saved. The dashboard will show your courses and guide you through Echo360 discovery before anything is downloaded.</p>
+      <dl class="setup-summary">
+        <div><dt>Canvas</dt><dd>{{ settings.canvas.base_url or 'Not configured' }}</dd></div>
+        <div><dt>Canvas login</dt><dd>{{ 'Connected' if canvas_session_saved else 'Not connected' }}</dd></div>
+        <div><dt>Courses</dt><dd>{{ courses|length }} saved</dd></div>
+        <div><dt>Downloads</dt><dd>{{ settings.paths.download_root }}</dd></div>
+        <div><dt>AI notes</dt><dd>{{ selected_provider ~ ' · ' ~ settings.ai.note_length if settings.ai.enabled else 'Disabled' }}</dd></div>
+        <div><dt>Local Whisper</dt><dd>{{ 'Enabled' if settings.transcripts.whisper_enabled else 'Disabled' }}</dd></div>
+      </dl>
+      <form method="post" action="/setup/finish" class="onboarding-actions">
+        <a class="secondary-button" href="/setup?step=6">Back</a>
+        <button type="submit">Open dashboard</button>
+      </form>
+      {% endif %}
+    </section>
+  </main>
+
+  <script>
+    const providerModels = {{ provider_models | tojson }};
+    const providerStatuses = {{ providers | tojson }};
+    const providerSelect = document.getElementById('setup-ai-provider');
+    const modelSelect = document.getElementById('setup-ai-model');
+    const keyGroup = document.getElementById('setup-api-key-group');
+    const keyStatus = document.getElementById('setup-key-status');
+    const aiFields = document.getElementById('setup-ai-fields');
+
+    function updateAiChoice() {
+      const enabled = document.querySelector('input[name="ai_enabled"]:checked')?.value === 'true';
+      if (!aiFields) return;
+      aiFields.hidden = !enabled;
+      aiFields.querySelectorAll('input, select, textarea').forEach((control) => {
+        control.disabled = !enabled;
+      });
+    }
+    document.querySelectorAll('input[name="ai_enabled"]').forEach((control) => {
+      control.addEventListener('change', updateAiChoice);
+    });
+    updateAiChoice();
+
+    function updateProviderFields() {
+      if (!providerSelect || !modelSelect) return;
+      const provider = providerStatuses.find((item) => item.name === providerSelect.value);
+      modelSelect.replaceChildren(...(providerModels[providerSelect.value] || []).map((model) => {
+        const option = document.createElement('option');
+        option.value = model.id;
+        option.textContent = model.label;
+        option.selected = model.id === provider.default_model;
+        return option;
+      }));
+      keyGroup.hidden = !provider.requires_key;
+      keyStatus.textContent = provider.key_status;
+    }
+    providerSelect?.addEventListener('change', updateProviderFields);
+    if (providerSelect) {
+      const provider = providerStatuses.find((item) => item.name === providerSelect.value);
+      keyGroup.hidden = !provider.requires_key;
+      keyStatus.textContent = provider.key_status;
+    }
+
+    const canvasInstitutions = {{ canvas_institutions | tojson }};
+    const universitySearch = document.getElementById('university-search');
+    const universitySelect = document.getElementById('setup-university');
+    const canvasUrl = document.getElementById('setup-canvas-url');
+    const canvasAddressNote = document.getElementById('canvas-address-note');
+
+    function updateCanvasAddress() {
+      if (!universitySelect || !canvasUrl) return;
+      const selected = universitySelect.selectedOptions[0];
+      const custom = selected.value === 'other';
+      if (!custom) canvasUrl.value = selected.dataset.url;
+      canvasUrl.readOnly = !custom;
+      canvasAddressNote.textContent = custom
+        ? 'Enter the complete Canvas address supplied by your university.'
+        : 'Filled from the selected university. Choose Other university to edit it.';
+    }
+    universitySelect?.addEventListener('change', updateCanvasAddress);
+    universitySearch?.addEventListener('input', () => {
+      const term = universitySearch.value.trim().toLowerCase();
+      const matches = [];
+      [...universitySelect.options].forEach((option) => {
+        option.hidden = option.value !== 'other' && !option.textContent.toLowerCase().includes(term);
+        if (option.value !== 'other' && !option.hidden) matches.push(option);
+      });
+      if (term && matches.length === 1) {
+        universitySelect.value = matches[0].value;
+        updateCanvasAddress();
+      }
+    });
+    if (universitySelect) {
+      const known = canvasInstitutions.find((item) => item.id === universitySelect.value);
+      if (known && !canvasUrl.value) canvasUrl.value = known.url;
+      updateCanvasAddress();
+    }
+
+    document.querySelectorAll('[data-folder-field]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const originalText = button.textContent;
+        button.disabled = true;
+        button.textContent = 'Choosing...';
+        try {
+          const body = new FormData();
+          body.append('field', button.dataset.folderField);
+          const response = await fetch('/settings/choose-folder', { method: 'POST', body });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.detail || 'Folder selection failed.');
+          if (!result.cancelled && result.path) document.getElementById(button.dataset.folderTarget).value = result.path;
+        } catch (error) {
+          window.alert(error.message);
+        } finally {
+          button.disabled = false;
+          button.textContent = originalText;
+        }
+      });
+    });
+  </script>
+</body>
+</html>

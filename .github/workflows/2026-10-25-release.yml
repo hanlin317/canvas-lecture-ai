@@ -14,6 +14,8 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -22,8 +24,42 @@ jobs:
         run: python -m pip install -e '.[ai,dev]'
       - name: Test
         run: |
-          ruff check app tests
+          ruff check app tests scripts/2026-10-26-release-notes.py
           pytest -q
+      - name: Validate release metadata
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="$(python -c 'import pathlib,tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          PACKAGE_VERSION="$(python -c 'import app; print(app.__version__)')"
+          SPEC_VERSION="$(python -c 'import pathlib,re; text=pathlib.Path("2026-10-25-dental-lecture-manager.spec").read_text(); match=re.search(r"\"CFBundleShortVersionString\": \"([^\"]+)\"", text); print(match.group(1) if match else "")')"
+          if [[ "$PACKAGE_VERSION" != "$VERSION" || "$SPEC_VERSION" != "$VERSION" ]]; then
+            echo "Version mismatch: project=$VERSION package=$PACKAGE_VERSION bundle=$SPEC_VERSION" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            if [[ "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
+              echo "Tag $GITHUB_REF_NAME does not match project version $VERSION" >&2
+              exit 1
+            fi
+            if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+              echo "Release $GITHUB_REF_NAME already exists. Published releases are immutable; create a new version." >&2
+              exit 1
+            fi
+            PREVIOUS_TAG="$(git tag --sort=-version:refname | grep -vx "$GITHUB_REF_NAME" | head -n 1 || true)"
+            NOTES_ARGS=(
+              --changelog 2026-10-26-CHANGELOG.md
+              --version "$VERSION"
+              --repository "$GITHUB_REPOSITORY"
+              --output "$RUNNER_TEMP/release-notes.md"
+            )
+            if [[ -n "$PREVIOUS_TAG" ]]; then
+              NOTES_ARGS+=(--previous-version "${PREVIOUS_TAG#v}")
+            fi
+            python scripts/2026-10-26-release-notes.py "${NOTES_ARGS[@]}"
+          fi
       - name: Build arm64 DMG
         run: bash 2026-10-25-build-macos.sh
       - name: Verify packaged runtime
@@ -33,16 +69,14 @@ jobs:
             self-check --output "$RUNNER_TEMP/dlm-self-check.json"
           python -c 'import json, os; data=json.load(open(os.environ["RUNNER_TEMP"] + "/dlm-self-check.json")); assert data["status"] == "ok" and data["mlx_whisper"] and all(data["document_exporters"].values())'
           codesign --verify --deep --strict 'dist/Canvas Lecture AI.app'
+          APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 'dist/Canvas Lecture AI.app/Contents/Info.plist')"
+          test "$APP_VERSION" = "${{ steps.release.outputs.version }}"
           cd dist && shasum -a 256 -c *.dmg.sha256
       - name: Sign update manifest
         env:
           UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY }}
         run: |
-          VERSION="$(python -c 'import pathlib,tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
-          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
-            echo "Tag $GITHUB_REF_NAME does not match project version $VERSION" >&2
-            exit 1
-          fi
+          VERSION="${{ steps.release.outputs.version }}"
           DMG_NAME="Canvas-Lecture-AI-v${VERSION}-arm64.dmg"
           MANIFEST_NAME="Canvas-Lecture-AI-v${VERSION}-update.json"
           export VERSION DMG_NAME MANIFEST_NAME
@@ -53,7 +87,7 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: canvas-lecture-ai-arm64
+          name: canvas-lecture-ai-v${{ steps.release.outputs.version }}-arm64
           path: |
             dist/*.dmg
             dist/*.sha256
@@ -64,8 +98,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/*.dmg dist/*.sha256 dist/*-update.json dist/*-update.json.sig --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" dist/*.dmg dist/*.sha256 dist/*-update.json dist/*-update.json.sig --generate-notes --verify-tag
-          fi
+          gh release create "$GITHUB_REF_NAME" \
+            dist/*.dmg dist/*.sha256 dist/*-update.json dist/*-update.json.sig \
+            --title "Canvas Lecture AI v${{ steps.release.outputs.version }}" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
+            --verify-tag

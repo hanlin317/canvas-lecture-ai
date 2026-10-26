@@ -237,6 +237,10 @@ are opt-in, and installation waits until no lecture job is running. Update
 checks can be disabled in Settings. Source installations are updated through
 Git and cannot use the in-app installer.
 
+Every published version remains available on GitHub Releases with its own DMG,
+checksum, signed update manifest, signature, and release notes. See the
+[changelog](2026-10-26-CHANGELOG.md) for the complete version history.
+
 ## Local Transcript Fallback
 
 When Echo360 has no official transcript, the app can transcribe the downloaded
@@ -250,7 +254,7 @@ when a canonical transcript already exists unless overwrite is enabled.
 Run the quality gate:
 
 ```bash
-ruff check app tests
+ruff check app tests scripts/2026-10-26-release-notes.py
 pytest -q
 ```
 
@@ -266,6 +270,19 @@ signs it, and writes the versioned DMG plus SHA-256 checksum to `dist/`.
 
 Pushing a `v*` tag runs the same tests and build on GitHub Actions, then attaches
 the DMG, checksum, signed update manifest, and signature to a GitHub release.
+
+### Publishing a release
+
+1. Move the relevant items from `Unreleased` in
+   [`2026-10-26-CHANGELOG.md`](2026-10-26-CHANGELOG.md) into a new dated semantic-version section.
+2. Update the matching version in `pyproject.toml`, `app/__init__.py`, and the
+   PyInstaller specification.
+3. Run `ruff check app tests scripts/2026-10-26-release-notes.py` and `pytest -q`, then commit the release.
+4. Create and push a new annotated tag, such as `v0.4.0`.
+
+The release workflow validates all version fields and extracts the matching
+changelog entry as the GitHub release description. Existing releases are
+immutable: rerunning a published tag fails instead of replacing its assets.
 
 ## Known Limitations
 

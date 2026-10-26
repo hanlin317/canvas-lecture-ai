@@ -1,6 +1,6 @@
 [project]
 name = "canvas-lecture-ai"
-version = "0.3.0"
+version = "0.4.0"
 description = "Canvas lecture downloader and AI notes generator for macOS"
 readme = "README.md"
 license = {file = "2026-10-25-LICENSE.md"}

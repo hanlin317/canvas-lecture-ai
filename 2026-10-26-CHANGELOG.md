@@ -1,0 +1,69 @@
+# Changelog
+
+All notable changes to Canvas Lecture AI are documented here. The project follows
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html), and published release assets are
+immutable.
+
+## [Unreleased]
+
+## [0.4.0] - 2026-10-26
+
+### Added
+
+- A seven-step first-run setup guide covering storage, AI notes, transcription, Canvas login,
+  course sync, and a final configuration review.
+- A searchable university Canvas picker with University of Sydney first, verified presets for
+  common Australian universities, and custom URL entry for other institutions.
+- An explicit option to use the downloader without configuring or generating AI notes.
+- Persistent onboarding progress and a Settings action to run the guide again.
+
+### Changed
+
+- AI provider preferences are retained when AI notes are disabled, making it possible to turn the
+  feature back on without re-entering the configuration.
+- The dashboard disables AI-only controls when AI notes are not configured while leaving lecture,
+  slide, transcript, NotebookLM, and Obsidian workflows available.
+
+## [0.3.0] - 2026-10-26
+
+### Added
+
+- Rebranded the application as Canvas Lecture AI with the subtitle Lecture Downloader & AI Notes
+  Generator.
+- Native PDF and Word exports with headings, lists, tables, links, code blocks, headers, and page
+  numbers.
+- Configurable AI providers, live provider model refresh, note lengths, custom instructions, and
+  Markdown, PDF, or Word output.
+- Slide downloads, topic-local lecture numbering, per-topic selection, cancellable background jobs,
+  progress percentages, lecture position, and estimated time remaining.
+- Signed automatic updates with DMG checksum, bundle identity, version validation, and rollback.
+- A packaged local MLX Whisper fallback and improved Echo360 course, folder, and media discovery.
+
+### Changed
+
+- Improved transcript cleaning and the clinical study-note prompt while keeping output grounded in
+  lecture evidence.
+- Simplified Obsidian filenames to use the lecture title while retaining structured metadata.
+- Moved configuration into the web interface and preserved legacy application data and Keychain
+  access after the rebrand.
+
+### Security
+
+- Stored provider API keys in macOS Keychain.
+- Added Ed25519 signatures to update manifests and verified downloaded DMGs before installation.
+
+## [0.2.0] - 2026-10-25
+
+### Added
+
+- Initial local macOS application for Canvas login, course sync, and Echo360 lecture discovery.
+- Video, slide, official transcript, and local MLX Whisper download workflows.
+- Deterministic lecture folders, cleaned transcripts, NotebookLM source preparation, AI study notes,
+  and Obsidian export.
+- Local SQLite state, processing history, course grouping, and a browser-based management interface.
+- Apple Silicon DMG packaging and the first GitHub release workflow.
+
+[Unreleased]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/hanlin317/canvas-lecture-ai/releases/tag/v0.2.0

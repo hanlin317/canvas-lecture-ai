@@ -72,6 +72,80 @@ def test_first_run_requires_canvas_setup_before_login(tmp_path, monkeypatch) -> 
     assert '<form method="post" action="/login"><button disabled>' in response.text
 
 
+def test_new_install_redirects_to_guided_onboarding(tmp_path, monkeypatch) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f"[app]\ndatabase_path = '{tmp_path / 'test.sqlite3'}'\n"
+        "onboarding_complete = false\nonboarding_step = 1\n"
+        "[canvas]\nbase_url = ''\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DLM_CONFIG", str(config))
+    client = TestClient(create_app())
+
+    response = client.get("/", follow_redirects=False)
+    setup = client.get("/setup")
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/setup"
+    assert setup.status_code == 200
+    assert "Step 1 of 7" in setup.text
+    assert "Let’s get your lectures organised" in setup.text
+
+
+def test_onboarding_saves_progress_and_can_finish(tmp_path, monkeypatch) -> None:
+    downloads = tmp_path / "downloads"
+    notebook = tmp_path / "notebook"
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f"[app]\ndatabase_path = '{tmp_path / 'test.sqlite3'}'\n"
+        "onboarding_complete = false\nonboarding_step = 2\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DLM_CONFIG", str(config))
+    client = TestClient(create_app())
+
+    storage = client.post(
+        "/setup/storage",
+        data={
+            "canvas_base_url": "https://canvas.example.edu/",
+            "download_root": str(downloads),
+            "notebooklm_staging_dir": str(notebook),
+            "obsidian_vault": "",
+        },
+        follow_redirects=False,
+    )
+    step = client.get("/setup")
+    saved_step = load_settings(config).app.onboarding_step
+    finished = client.post("/setup/finish", follow_redirects=False)
+
+    assert storage.status_code == 303
+    assert storage.headers["location"].startswith("/setup?step=3")
+    assert "Step 3 of 7" in step.text
+    assert saved_step == 3
+    assert finished.status_code == 303
+    assert load_settings(config).app.onboarding_complete is True
+
+
+def test_onboarding_can_be_restarted_from_dashboard(tmp_path, monkeypatch) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f"[app]\ndatabase_path = '{tmp_path / 'test.sqlite3'}'\n"
+        "onboarding_complete = true\nonboarding_step = 7\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DLM_CONFIG", str(config))
+    client = TestClient(create_app())
+
+    dashboard = client.get("/")
+    restarted = client.post("/setup/restart", follow_redirects=False)
+
+    assert "Run setup again" in dashboard.text
+    assert restarted.status_code == 303
+    assert restarted.headers["location"] == "/setup?step=1"
+    assert load_settings(config).app.onboarding_complete is False
+
+
 def test_app_settings_route_saves_validated_configuration(tmp_path, monkeypatch) -> None:
     download = tmp_path / "downloads"
     notebook = tmp_path / "notebook"
@@ -95,6 +169,7 @@ def test_app_settings_route_saves_validated_configuration(tmp_path, monkeypatch)
             "download_root": str(download),
             "notebooklm_staging_dir": str(notebook),
             "obsidian_vault": str(vault),
+                "ai_enabled": "on",
             "ai_provider": "anthropic",
             "ai_model": "claude-sonnet-5",
             "ai_note_length": "detailed",
@@ -123,6 +198,58 @@ def test_app_settings_route_saves_validated_configuration(tmp_path, monkeypatch)
     assert settings.transcripts.whisper_enabled is True
     assert "# retained" in config.read_text(encoding="utf-8")
     assert settings.downloads.concurrency == 5
+
+
+def test_onboarding_lists_sydney_first_and_supports_custom_canvas_url(
+    tmp_path, monkeypatch
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f"[app]\ndatabase_path = '{tmp_path / 'test.sqlite3'}'\n"
+        "[canvas]\nbase_url = 'https://canvas.custom.example.edu'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DLM_CONFIG", str(config))
+
+    response = TestClient(create_app()).get("/setup?step=2")
+
+    assert response.status_code == 200
+    assert response.text.index("University of Sydney") < response.text.index(
+        "University of Technology Sydney"
+    )
+    assert 'id="university-search"' in response.text
+    assert '<option value="other" selected>Other university</option>' in response.text
+    assert 'value="https://canvas.custom.example.edu"' in response.text
+
+
+def test_onboarding_can_disable_ai_without_erasing_provider_settings(tmp_path, monkeypatch) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f"[app]\ndatabase_path = '{tmp_path / 'test.sqlite3'}'\n"
+        "[ai]\nenabled = true\nprovider = 'anthropic'\nmodel = 'claude-sonnet-5'\n"
+        "note_length = 'detailed'\ncustom_instructions = 'Keep this preference.'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DLM_CONFIG", str(config))
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/setup/ai",
+        data={"ai_enabled": "false"},
+        follow_redirects=False,
+    )
+    settings = load_settings(config)
+    client.post("/setup/finish", follow_redirects=False)
+    dashboard = client.get("/")
+
+    assert response.status_code == 303
+    assert settings.ai.enabled is False
+    assert settings.ai.provider == "anthropic"
+    assert settings.ai.model == "claude-sonnet-5"
+    assert settings.ai.note_length == "detailed"
+    assert settings.ai.custom_instructions == "Keep this preference."
+    assert 'id="ai-notes" type="checkbox" name="ai_notes" disabled' in dashboard.text
+    assert "AI notes (disabled)" in dashboard.text
 
 
 def test_app_settings_route_creates_output_folders(tmp_path, monkeypatch) -> None:

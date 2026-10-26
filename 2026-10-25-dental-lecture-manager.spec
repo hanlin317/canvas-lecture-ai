@@ -78,8 +78,8 @@ app = BUNDLE(
     bundle_identifier="com.hanlin317.dentallecturemanager",
     info_plist={
         "CFBundleDisplayName": "Canvas Lecture AI",
-        "CFBundleShortVersionString": "0.3.0",
-        "CFBundleVersion": "3",
+        "CFBundleShortVersionString": "0.4.0",
+        "CFBundleVersion": "4",
         "LSMinimumSystemVersion": "14.0",
         "NSHighResolutionCapable": True,
     },

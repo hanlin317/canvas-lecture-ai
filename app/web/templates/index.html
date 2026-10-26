@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Canvas Lecture AI</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20261025-8">
+  <link rel="stylesheet" href="/static/styles.css?v=20261026-3">
 </head>
 <body>
   <header>
@@ -98,7 +98,7 @@
         <button {% if not courses %}disabled{% endif %}>View Course</button>
         <button type="submit" formmethod="post" formaction="/discover" data-job-submit {% if not courses %}disabled{% endif %}>Discover Echo360 Lectures</button>
       </form>
-      <details class="course-grouping-controls">
+      {% if settings.ai.enabled %}<details class="course-grouping-controls">
         <summary>AI course grouping</summary>
         <form method="post" action="/courses/group" class="compact-form">
           <input type="hidden" name="course" value="{{ selected_course.id if selected_course else '' }}">
@@ -118,7 +118,7 @@
           </select>
           <button>Group Courses with AI</button>
         </form>
-      </details>
+      </details>{% endif %}
     </section>
 
     <details class="panel settings-panel" {% if not setup_complete %}open{% endif %}>
@@ -127,6 +127,13 @@
         <span class="config-status {{ 'ok' if setup_complete else 'warn' }}">{{ 'Configured' if setup_complete else 'Setup required' }}</span>
       </summary>
       <div class="settings-columns">
+      <form method="post" action="/setup/restart" class="setup-restart-form">
+        <div>
+          <strong>Guided setup</strong>
+          <span>Walk through storage, AI, transcription, Canvas login, and course sync again.</span>
+        </div>
+        <button type="submit" class="secondary-button">Run setup again</button>
+      </form>
       <form method="post" action="/settings/app" class="app-config-form">
         <input type="hidden" name="course_code" value="{{ selected_course.id if selected_course else '' }}">
 
@@ -153,23 +160,26 @@
         <span></span>
         <span id="obsidian-vault-status" class="config-status {{ obsidian_vault_status.kind }}">{{ obsidian_vault_status.text }}</span>
 
-        <label for="config-ai-provider">Default AI provider</label>
-        <select id="config-ai-provider" name="ai_provider">
+        <label>AI notes</label>
+        <label class="checkbox-setting"><input id="config-ai-enabled" type="checkbox" name="ai_enabled" {% if settings.ai.enabled %}checked{% endif %}> Enable AI-generated notes</label>
+
+        <label class="ai-config-dependent" for="config-ai-provider">Default AI provider</label>
+        <select class="ai-config-dependent" id="config-ai-provider" name="ai_provider">
           {% for provider in ai_providers %}
           <option value="{{ provider.name }}" data-default-model="{{ provider.default_model }}" {% if provider.name == default_ai_provider %}selected{% endif %}>{{ provider.label }}</option>
           {% endfor %}
         </select>
 
-        <label for="config-ai-model">Default AI model</label>
-        <select id="config-ai-model" name="ai_model" required>
+        <label class="ai-config-dependent" for="config-ai-model">Default AI model</label>
+        <select class="ai-config-dependent" id="config-ai-model" name="ai_model" required>
           {% for provider in ai_providers if provider.name == default_ai_provider %}
           {% for model in provider.models %}
           <option value="{{ model.id }}" {% if model.id == default_ai_model %}selected{% endif %}>{{ model.label }}</option>
           {% endfor %}
           {% endfor %}
         </select>
-        <span></span>
-        <div class="model-refresh-control">
+        <span class="ai-config-dependent"></span>
+        <div class="model-refresh-control ai-config-dependent">
           <button
             type="submit"
             class="secondary-button"
@@ -184,16 +194,16 @@
           </span>
         </div>
 
-        <label for="config-note-length">Default note length</label>
-        <select id="config-note-length" name="ai_note_length">
+        <label class="ai-config-dependent" for="config-note-length">Default note length</label>
+        <select class="ai-config-dependent" id="config-note-length" name="ai_note_length">
           <option value="concise" {% if settings.ai.note_length == 'concise' %}selected{% endif %}>Concise</option>
           <option value="standard" {% if settings.ai.note_length == 'standard' %}selected{% endif %}>Standard</option>
           <option value="detailed" {% if settings.ai.note_length == 'detailed' %}selected{% endif %}>Detailed</option>
           <option value="comprehensive" {% if settings.ai.note_length == 'comprehensive' %}selected{% endif %}>Comprehensive</option>
         </select>
 
-        <label for="config-ai-instructions">Default AI instructions</label>
-        <div class="prompt-control">
+        <label class="ai-config-dependent" for="config-ai-instructions">Default AI instructions</label>
+        <div class="prompt-control ai-config-dependent">
           <textarea id="config-ai-instructions" name="ai_custom_instructions" rows="5" maxlength="6000" placeholder="Optional: emphasize particular clinical topics or use a preferred structure.">{{ settings.ai.custom_instructions }}</textarea>
           <button type="button" class="secondary-button" data-reset-prompt="config-ai-instructions">Reset to recommended</button>
         </div>
@@ -280,7 +290,7 @@
           <label><input type="checkbox" name="download_transcript" checked> Transcript</label>
           <label title="Runs locally. The model downloads once when first needed."><input type="checkbox" name="whisper_fallback" {% if settings.transcripts.whisper_enabled %}checked{% endif %}> Local transcript fallback</label>
           <label><input type="checkbox" name="notebooklm" checked> NotebookLM</label>
-          <label><input id="ai-notes" type="checkbox" name="ai_notes"> AI notes</label>
+          <label title="{{ 'Generate AI study notes' if settings.ai.enabled else 'Enable AI notes in Settings first' }}"><input id="ai-notes" type="checkbox" name="ai_notes" {% if not settings.ai.enabled %}disabled{% endif %}> AI notes{% if not settings.ai.enabled %} (disabled){% endif %}</label>
           <label><input type="checkbox" name="save_obsidian"> Save to Obsidian</label>
           <label><input type="checkbox" name="overwrite"> Overwrite</label>
         </div>
@@ -383,6 +393,7 @@
     connectProviderModel('config-ai-provider', 'config-ai-model');
 
     const configProvider = document.getElementById('config-ai-provider');
+    const configAiEnabled = document.getElementById('config-ai-enabled');
     const modelRefreshStatus = document.getElementById('model-refresh-status');
     function updateModelRefreshStatus() {
       const refreshedAt = providerRefreshTimes[configProvider.value];
@@ -393,16 +404,33 @@
     configProvider.addEventListener('change', updateModelRefreshStatus);
     updateModelRefreshStatus();
 
+    function updateConfiguredAiState() {
+      const disabled = !configAiEnabled.checked;
+      document.querySelectorAll('.ai-config-dependent').forEach((element) => {
+        element.classList.toggle('disabled-setting', disabled);
+        element.querySelectorAll?.('input, select, textarea, button').forEach((control) => {
+          control.disabled = disabled;
+        });
+        if (element.matches('select, textarea, input, button')) element.disabled = disabled;
+      });
+    }
+    configAiEnabled.addEventListener('change', updateConfiguredAiState);
+    updateConfiguredAiState();
+
     const aiNotesToggle = document.getElementById('ai-notes');
     const aiNoteFormat = document.getElementById('ai-note-format');
     const aiNoteLength = document.getElementById('ai-note-length');
     const aiCustomInstructions = document.getElementById('ai-custom-instructions');
     const aiNoteOptions = document.getElementById('ai-note-options');
+    const pipelineAiProvider = document.getElementById('ai-provider');
+    const pipelineAiModel = document.getElementById('ai-model');
     function updateAiNoteFormat() {
       const disabled = !aiNotesToggle.checked;
       aiNoteFormat.disabled = disabled;
       aiNoteLength.disabled = disabled;
       aiCustomInstructions.disabled = disabled;
+      pipelineAiProvider.disabled = disabled;
+      pipelineAiModel.disabled = disabled;
       aiNoteOptions.classList.toggle('disabled', disabled);
     }
     aiNotesToggle.addEventListener('change', updateAiNoteFormat);
