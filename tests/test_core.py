@@ -18,7 +18,12 @@ from app.ai.factory import AI_PROVIDER_SPECS, api_key_status, get_ai_provider, l
 from app.ai.prompts import build_study_note_prompt, note_length_tokens
 from app.canvas.client import CanvasClient, _next_page_url
 from app.canvas.models import CanvasCourseSummary
-from app.config import load_settings, prepare_runtime_environment, save_web_settings
+from app.config import (
+    application_support_dir,
+    load_settings,
+    prepare_runtime_environment,
+    save_web_settings,
+)
 from app.database import Database
 from app.echo360.client import (
     Echo360Client,
@@ -49,7 +54,7 @@ from app.services.discovery import (
 from app.services.manifest import export_topic_manifest
 from app.services.pipeline import PipelineService
 from app.transcripts.cleaner import clean_plain_transcript, clean_vtt
-from app.transcripts.whisper import transcribe_with_mlx_whisper
+from app.transcripts.whisper import transcribe_with_local_whisper, transcribe_with_mlx_whisper
 from app.utils import lecture_stem, number_for_position, safe_filename, sha256_text
 
 
@@ -149,6 +154,7 @@ def test_bundled_mlx_whisper_writes_local_transcript(tmp_path: Path, monkeypatch
             calls.append((path, path_or_hf_repo)) or {"text": "Local transcript"}
         )
     )
+    monkeypatch.setattr("app.transcripts.whisper.sys.platform", "darwin")
     monkeypatch.setattr("app.transcripts.whisper.importlib.util.find_spec", lambda _name: object())
     monkeypatch.setitem(sys.modules, "mlx_whisper", fake_module)
 
@@ -161,6 +167,43 @@ def test_bundled_mlx_whisper_writes_local_transcript(tmp_path: Path, monkeypatch
     assert result == output
     assert output.read_text(encoding="utf-8") == "Local transcript\n"
     assert calls == [(str(video), "mlx-community/whisper-large-v3-turbo-q4")]
+
+
+def test_faster_whisper_writes_local_transcript_on_windows(tmp_path: Path, monkeypatch) -> None:
+    video = tmp_path / "lecture.mp4"
+    video.write_bytes(b"video")
+    output = tmp_path / "lecture.whisper.txt"
+    calls = []
+
+    class FakeWhisperModel:
+        def __init__(self, model, *, device, compute_type):
+            calls.append((model, device, compute_type))
+
+        def transcribe(self, path, *, vad_filter):
+            calls.append((path, vad_filter))
+            return iter([SimpleNamespace(text=" First "), SimpleNamespace(text="second")]), None
+
+    monkeypatch.setattr("app.transcripts.whisper.sys.platform", "win32")
+    monkeypatch.setattr(
+        "app.transcripts.whisper.importlib.util.find_spec",
+        lambda name: object() if name == "faster_whisper" else None,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "ctranslate2",
+        SimpleNamespace(get_cuda_device_count=lambda: 0),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "faster_whisper",
+        SimpleNamespace(WhisperModel=FakeWhisperModel),
+    )
+
+    result = transcribe_with_local_whisper(video, output, model="large-v3-turbo")
+
+    assert result == output
+    assert output.read_text(encoding="utf-8") == "First second\n"
+    assert calls == [("large-v3-turbo", "cpu", "int8"), (str(video), True)]
 
 
 def test_hash_is_content_based() -> None:
@@ -358,6 +401,14 @@ def test_packaged_runtime_bootstraps_private_application_support(
     assert os.environ["DLM_FFMPEG"] == str(ffmpeg)
 
 
+def test_windows_application_support_uses_local_app_data(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("DLM_DATA_DIR", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(app_config.sys, "platform", "win32")
+
+    assert application_support_dir() == tmp_path / "Canvas Lecture AI"
+
+
 def test_canvas_recognizes_external_sso_as_expired() -> None:
     settings = load_settings()
     settings.canvas.base_url = "https://canvas.example.edu"
@@ -471,6 +522,15 @@ def test_ai_provider_catalog_and_keychain_lookup(monkeypatch) -> None:
     assert api_key_status("openrouter") == "Keychain"
     assert load_api_key("openrouter") == "secret-from-keychain"
     assert get_ai_provider("openrouter").name == "openrouter"
+
+
+def test_windows_credential_manager_lookup(monkeypatch) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(ai_factory.sys, "platform", "win32")
+    monkeypatch.setattr(ai_factory, "_load_windows_credential", lambda name: f"secret-{name}")
+
+    assert api_key_status("openrouter") == "Windows Credential Manager"
+    assert load_api_key("openrouter") == "secret-openrouter"
 
 
 @pytest.mark.asyncio

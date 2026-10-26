@@ -54,8 +54,8 @@ class TranscriptsConfig(BaseModel):
     keep_vtt: bool = True
     include_timestamps: bool = False
     whisper_enabled: bool = True
-    whisper_command: str = "mlx_whisper"
-    whisper_model: str = "mlx-community/whisper-large-v3-turbo-q4"
+    whisper_command: str = "auto"
+    whisper_model: str = "large-v3-turbo"
 
 
 class AIConfig(BaseModel):
@@ -122,6 +122,9 @@ def application_support_dir() -> Path:
     override = os.environ.get("DLM_DATA_DIR")
     if override:
         return Path(override).expanduser()
+    if sys.platform == "win32":
+        parent = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        return parent / APP_SUPPORT_NAME
     parent = Path.home() / "Library" / "Application Support"
     preferred = parent / APP_SUPPORT_NAME
     legacy = parent / LEGACY_APP_SUPPORT_NAME
@@ -134,7 +137,7 @@ def bundled_resource(name: str) -> Path:
 
 
 def prepare_runtime_environment() -> Path | None:
-    """Prepare writable per-user paths and bundled tools for the macOS app."""
+    """Prepare writable per-user paths and bundled tools for a packaged app."""
     if not is_packaged():
         return None
 

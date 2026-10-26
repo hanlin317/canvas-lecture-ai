@@ -337,6 +337,52 @@ async def test_reveal_notebooklm_sources_opens_configured_folder(tmp_path, monke
     assert calls == [("open", str(sources))]
 
 
+@pytest.mark.asyncio
+async def test_windows_folder_picker_uses_native_dialog(monkeypatch) -> None:
+    calls = []
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"C:\\Users\\Student\\Lectures\r\n", b""
+
+    async def fake_subprocess(*args, **kwargs):
+        calls.append((args, kwargs))
+        return FakeProcess()
+
+    monkeypatch.setattr(web_routes.sys, "platform", "win32")
+    monkeypatch.setattr(web_routes.asyncio, "create_subprocess_exec", fake_subprocess)
+
+    selected = await web_routes.choose_directory("Choose downloads")
+
+    assert selected == "C:\\Users\\Student\\Lectures"
+    assert calls[0][0][:4] == ("powershell.exe", "-NoProfile", "-STA", "-Command")
+
+
+@pytest.mark.asyncio
+async def test_reveal_notebooklm_sources_uses_explorer_on_windows(tmp_path, monkeypatch) -> None:
+    calls = []
+
+    class FakeProcess:
+        async def wait(self):
+            return 0
+
+    async def fake_subprocess(*args):
+        calls.append(args)
+        return FakeProcess()
+
+    monkeypatch.setattr(web_routes.sys, "platform", "win32")
+    monkeypatch.setattr(web_routes.asyncio, "create_subprocess_exec", fake_subprocess)
+    settings = load_settings()
+    settings.paths.notebooklm_staging_dir = str(tmp_path / "NotebookLM Sources")
+
+    response = await web_routes.reveal_notebooklm_sources(settings=settings)
+
+    assert response.status_code == 303
+    assert calls == [("explorer.exe", str(tmp_path / "NotebookLM Sources"))]
+
+
 def test_app_settings_route_rejects_non_vault_folder(tmp_path, monkeypatch) -> None:
     folder = tmp_path / "folder"
     folder.mkdir()
@@ -587,6 +633,26 @@ def test_update_manifest_signature_accepts_authentic_content_and_rejects_tamperi
         web_routes._verify_update_manifest(manifest + b" ", signature)
 
 
+def test_cross_platform_update_manifest_selects_windows_asset(monkeypatch) -> None:
+    monkeypatch.setattr(web_routes.sys, "platform", "win32")
+    manifest = {
+        "version": "9.9.9",
+        "platforms": {
+            "windows-x64": {
+                "download_url": "https://example.test/setup.exe",
+                "file_name": "setup.exe",
+                "sha256": "a" * 64,
+                "size": 123,
+            }
+        },
+    }
+
+    selected = web_routes._select_platform_update(manifest)
+
+    assert selected["platform"] == "windows-x64"
+    assert selected["file_name"] == "setup.exe"
+
+
 def test_update_install_is_unavailable_when_running_from_source(monkeypatch) -> None:
     previous_state = web_routes.UPDATE_STATE.copy()
     web_routes.UPDATE_STATE = {"status": "downloaded", "version": "9.9.9"}
@@ -597,7 +663,7 @@ def test_update_install_is_unavailable_when_running_from_source(monkeypatch) -> 
         web_routes.UPDATE_STATE = previous_state
 
     assert response.status_code == 409
-    assert "packaged macOS app" in response.json()["detail"]
+    assert "packaged application" in response.json()["detail"]
 
 
 def test_running_job_status_includes_eta(tmp_path, monkeypatch) -> None:

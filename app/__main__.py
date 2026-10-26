@@ -102,7 +102,9 @@ def main() -> None:
         path = asyncio.run(CanvasClient(settings).capture_browser_diagnostics(Path(args.output)))
         print(path)
     elif args.cmd == "self-check":
-        module = importlib.import_module("mlx_whisper")
+        from app.transcripts.whisper import local_whisper_available, local_whisper_engine
+
+        whisper_engine = local_whisper_engine()
         document_modules = {
             name: bool(importlib.import_module(name))
             for name in ("docx", "markdown_it", "reportlab")
@@ -113,7 +115,9 @@ def main() -> None:
             json.dumps(
                 {
                     "status": "ok",
-                    "mlx_whisper": bool(getattr(module, "transcribe", None)),
+                    "local_whisper": local_whisper_available(),
+                    "whisper_engine": whisper_engine,
+                    "mlx_whisper": whisper_engine == "mlx",
                     "document_exporters": document_modules,
                     "ffmpeg": os.environ.get("DLM_FFMPEG", ""),
                     "playwright_browsers": os.environ.get("PLAYWRIGHT_BROWSERS_PATH", ""),

@@ -30,8 +30,8 @@ prefer_official = true
 keep_vtt = true
 include_timestamps = false
 whisper_enabled = true
-whisper_command = "mlx_whisper"
-whisper_model = "mlx-community/whisper-large-v3-turbo-q4"
+whisper_command = "auto"
+whisper_model = "large-v3-turbo"
 
 [ai]
 # The web UI can select any supported provider and model for each pipeline run.

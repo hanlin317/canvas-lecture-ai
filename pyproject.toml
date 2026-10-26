@@ -1,7 +1,7 @@
 [project]
 name = "canvas-lecture-ai"
 version = "0.4.0"
-description = "Canvas lecture downloader and AI notes generator for macOS"
+description = "Canvas lecture downloader and AI notes generator for macOS and Windows"
 readme = "README.md"
 license = {file = "2026-10-25-LICENSE.md"}
 requires-python = ">=3.11"
@@ -12,6 +12,7 @@ classifiers = [
   "Environment :: MacOS X",
   "License :: OSI Approved :: MIT License",
   "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -31,8 +32,10 @@ dependencies = [
   "reportlab>=4.2",
   "cryptography>=43.0",
   "packaging>=24.0",
-  "mlx-whisper>=0.4.3",
-  "mlx>=0.23.2,<0.24",
+  "mlx-whisper>=0.4.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
+  "mlx>=0.23.2,<0.24; sys_platform == 'darwin' and platform_machine == 'arm64'",
+  "faster-whisper>=1.2; sys_platform == 'win32'",
+  "keyring>=25.6; sys_platform == 'win32'",
 ]
 
 [project.urls]

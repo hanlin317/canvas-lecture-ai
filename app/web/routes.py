@@ -28,6 +28,7 @@ from app import __version__
 from app.ai.factory import (
     AI_PROVIDER_SPECS,
     api_key_status,
+    credential_store_label,
     fetch_provider_models,
     get_ai_provider_spec,
     save_api_key,
@@ -39,7 +40,7 @@ from app.database import Database
 from app.models import JobRecord, PipelineOptions
 from app.services.discovery import DiscoveryService, _default_course_group
 from app.services.pipeline import PipelineService
-from app.transcripts.whisper import mlx_whisper_available
+from app.transcripts.whisper import local_whisper_available, local_whisper_engine
 from app.utils import expand_path
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -118,6 +119,18 @@ def selected_canvas_institution(canvas_url: str) -> str:
     )
 
 
+def platform_asset_key() -> str:
+    return "windows-x64" if sys.platform == "win32" else "macos-arm64"
+
+
+def platform_display_name() -> str:
+    return "Windows" if sys.platform == "win32" else "macOS"
+
+
+def whisper_display_name() -> str:
+    return "Faster Whisper" if sys.platform == "win32" else "MLX Whisper"
+
+
 def _updates_dir() -> Path:
     path = expand_path("local_data/updates")
     path.mkdir(parents=True, exist_ok=True)
@@ -157,11 +170,36 @@ def _verify_update_manifest(manifest_bytes: bytes, signature_bytes: bytes) -> di
     try:
         manifest = json.loads(manifest_bytes)
         Version(str(manifest["version"]))
-        if not all(manifest.get(key) for key in ("dmg_url", "sha256", "app_name")):
+        platforms = manifest.get("platforms")
+        legacy_macos = all(manifest.get(key) for key in ("dmg_url", "sha256", "app_name"))
+        if platforms is not None and not isinstance(platforms, dict):
+            raise ValueError("Update platforms must be an object.")
+        if not platforms and not legacy_macos:
             raise ValueError("Update manifest is incomplete.")
     except (KeyError, InvalidVersion, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise RuntimeError("The signed update manifest is malformed.") from exc
     return manifest
+
+
+def _select_platform_update(manifest: dict) -> dict:
+    key = platform_asset_key()
+    platforms = manifest.get("platforms")
+    if isinstance(platforms, dict):
+        asset = platforms.get(key)
+        if not isinstance(asset, dict) or not all(
+            asset.get(field) for field in ("download_url", "file_name", "sha256", "size")
+        ):
+            raise RuntimeError(f"This release does not contain an update for {platform_display_name()}.")
+        return {**manifest, **asset, "platform": key}
+    if key == "macos-arm64":
+        return {
+            **manifest,
+            "download_url": manifest["dmg_url"],
+            "file_name": Path(urlparse(str(manifest["dmg_url"])).path).name,
+            "installer_kind": "dmg",
+            "platform": key,
+        }
+    raise RuntimeError("This release predates Windows update support.")
 
 
 async def _fetch_signed_update_manifest(settings: Settings, *, force: bool = False) -> dict:
@@ -199,7 +237,9 @@ async def _fetch_signed_update_manifest(settings: Settings, *, force: bool = Fal
         manifest_response.raise_for_status()
         signature_response.raise_for_status()
 
-    manifest = _verify_update_manifest(manifest_response.content, signature_response.content)
+    manifest = _select_platform_update(
+        _verify_update_manifest(manifest_response.content, signature_response.content)
+    )
     latest = Version(str(manifest["version"]))
     current = Version(__version__)
     payload = {
@@ -215,9 +255,8 @@ async def _fetch_signed_update_manifest(settings: Settings, *, force: bool = Fal
 
 async def _download_update(manifest: dict) -> None:
     global UPDATE_STATE
-    version = str(manifest["version"])
-    destination = _updates_dir() / f"Canvas-Lecture-AI-v{version}-arm64.dmg"
-    temporary = destination.with_suffix(".dmg.part")
+    destination = _updates_dir() / str(manifest["file_name"])
+    temporary = destination.with_name(destination.name + ".part")
     expected_size = int(manifest.get("size") or 0)
     downloaded = 0
     digest = hashlib.sha256()
@@ -229,7 +268,7 @@ async def _download_update(manifest: dict) -> None:
     try:
         async with (
             httpx.AsyncClient(timeout=None, follow_redirects=True) as client,
-            client.stream("GET", str(manifest["dmg_url"])) as response,
+            client.stream("GET", str(manifest["download_url"])) as response,
         ):
             response.raise_for_status()
             total = expected_size or int(response.headers.get("content-length") or 0)
@@ -264,6 +303,8 @@ def _current_app_path() -> Path | None:
     if not getattr(sys, "frozen", False):
         return None
     executable = Path(sys.executable).resolve()
+    if sys.platform == "win32":
+        return executable
     return executable.parents[2] if len(executable.parents) >= 3 else None
 
 
@@ -380,6 +421,20 @@ async def _launch_update_installer(script: Path, needs_authorization: bool) -> N
         await asyncio.to_thread(subprocess.Popen, [str(script)], start_new_session=True)
 
 
+async def _launch_windows_installer(installer: Path) -> None:
+    await asyncio.sleep(1)
+    await asyncio.to_thread(
+        subprocess.Popen,
+        [
+            str(installer),
+            "/SILENT",
+            "/CLOSEAPPLICATIONS",
+            "/RESTARTAPPLICATIONS",
+        ],
+        start_new_session=True,
+    )
+
+
 @router.get("/updates/status")
 async def update_status(
     force: bool = False,
@@ -441,14 +496,20 @@ async def install_update() -> dict:
     if current_app is None:
         raise HTTPException(
             status_code=409,
-            detail="Automatic installation is available only in the packaged macOS app.",
+            detail="Automatic installation is available only in the packaged application.",
         )
-    dmg_path = Path(str(UPDATE_STATE.get("download_path") or ""))
-    if not dmg_path.is_file():
+    download_path = Path(str(UPDATE_STATE.get("download_path") or ""))
+    if not download_path.is_file():
         raise HTTPException(status_code=409, detail="The downloaded update could not be found.")
+    if sys.platform == "win32":
+        if download_path.suffix.lower() != ".exe":
+            raise HTTPException(status_code=409, detail="The Windows update is not an installer.")
+        UPDATE_STATE["status"] = "installing"
+        asyncio.create_task(_launch_windows_installer(download_path))
+        return {"status": "installing", "version": UPDATE_STATE["version"]}
     try:
-        await asyncio.to_thread(_mount_and_validate_update, dmg_path, UPDATE_STATE)
-        installer = _write_update_installer(dmg_path, UPDATE_STATE, current_app)
+        await asyncio.to_thread(_mount_and_validate_update, download_path, UPDATE_STATE)
+        installer = _write_update_installer(download_path, UPDATE_STATE, current_app)
     except (OSError, RuntimeError, subprocess.SubprocessError, InvalidVersion) as exc:
         logger.exception("Could not prepare app update")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -712,13 +773,21 @@ def validated_canvas_url(value: str) -> str:
 
 
 async def choose_directory(prompt: str) -> str | None:
-    if sys.platform != "darwin":
-        raise RuntimeError("Folder selection is currently available on macOS only.")
-    script = f'POSIX path of (choose folder with prompt "{prompt}")'
+    if sys.platform == "darwin":
+        command = ("osascript", "-e", f'POSIX path of (choose folder with prompt "{prompt}")')
+    elif sys.platform == "win32":
+        escaped_prompt = prompt.replace("'", "''")
+        script = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog; "
+            f"$dialog.Description = '{escaped_prompt}'; "
+            "if ($dialog.ShowDialog() -eq 'OK') { Write-Output $dialog.SelectedPath }"
+        )
+        command = ("powershell.exe", "-NoProfile", "-STA", "-Command", script)
+    else:
+        raise RuntimeError("Folder selection is supported on macOS and Windows.")
     process = await asyncio.create_subprocess_exec(
-        "osascript",
-        "-e",
-        script,
+        *command,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -728,7 +797,10 @@ async def choose_directory(prompt: str) -> str | None:
         if "User canceled" in message:
             return None
         raise RuntimeError(message or "Could not open the folder picker.")
-    return stdout.decode().strip().rstrip("/") or "/"
+    selected = stdout.decode().strip()
+    if not selected:
+        return None
+    return selected.rstrip("/") or "/"
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -831,7 +903,11 @@ async def index(
             "error": request.query_params.get("error"),
             "job_id": request.query_params.get("job"),
             "current_version": __version__,
-            "whisper_available": mlx_whisper_available(settings.transcripts.whisper_command),
+            "whisper_available": local_whisper_available(settings.transcripts.whisper_command),
+            "whisper_engine": local_whisper_engine(settings.transcripts.whisper_command),
+            "whisper_name": whisper_display_name(),
+            "platform_name": platform_display_name(),
+            "credential_store": credential_store_label(),
             "env": {
                 "OPENAI_API_KEY": bool(__import__("os").environ.get("OPENAI_API_KEY")),
                 "ANTHROPIC_API_KEY": bool(__import__("os").environ.get("ANTHROPIC_API_KEY")),
@@ -890,7 +966,11 @@ async def onboarding(
             "selected_model": selected_model,
             "canvas_session_saved": canvas.has_session(),
             "courses": db.list_courses(),
-            "whisper_available": mlx_whisper_available(settings.transcripts.whisper_command),
+            "whisper_available": local_whisper_available(settings.transcripts.whisper_command),
+            "whisper_engine": local_whisper_engine(settings.transcripts.whisper_command),
+            "whisper_name": whisper_display_name(),
+            "platform_name": platform_display_name(),
+            "credential_store": credential_store_label(),
             "obsidian_vault_status": obsidian_vault_status(settings.paths.obsidian_vault),
             "message": request.query_params.get("message"),
             "error": request.query_params.get("error"),
@@ -992,7 +1072,7 @@ async def save_onboarding_transcription(
     save_web_settings(
         {
             "transcripts.whisper_enabled": whisper_enabled,
-            "transcripts.whisper_model": model or "mlx-community/whisper-large-v3-turbo-q4",
+            "transcripts.whisper_model": model or "large-v3-turbo",
             "app.onboarding_complete": False,
             "app.onboarding_step": 5,
         }
@@ -1059,7 +1139,7 @@ async def update_api_key(
         logger.exception("Could not save AI provider key")
         return redirect_home(error=str(exc), course=course_code)
     return redirect_home(
-        message=f"{spec.label} API key saved in macOS Keychain.", course=course_code
+        message=f"{spec.label} API key saved in {credential_store_label()}.", course=course_code
     )
 
 
@@ -1123,7 +1203,7 @@ async def update_app_settings(
                 "updates.download_automatically": updates_download_automatically,
                 "updates.install_automatically": updates_install_automatically,
                 "transcripts.whisper_enabled": whisper_enabled,
-                "transcripts.whisper_model": (whisper or "mlx-community/whisper-large-v3-turbo-q4"),
+                "transcripts.whisper_model": (whisper or "large-v3-turbo"),
             }
         )
     except Exception as exc:
@@ -1185,12 +1265,8 @@ async def reveal_notebooklm_sources(
 ) -> RedirectResponse:
     path = expand_path(settings.paths.notebooklm_staging_dir)
     path.mkdir(parents=True, exist_ok=True)
-    if sys.platform != "darwin":
-        return redirect_home(
-            error="Showing the NotebookLM sources folder is currently available on macOS only.",
-            course=course_code,
-        )
-    process = await asyncio.create_subprocess_exec("open", str(path))
+    command = ("explorer.exe", str(path)) if sys.platform == "win32" else ("open", str(path))
+    process = await asyncio.create_subprocess_exec(*command)
     if await process.wait() != 0:
         return redirect_home(
             error="Could not open the NotebookLM sources folder.", course=course_code
