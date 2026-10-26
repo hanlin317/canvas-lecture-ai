@@ -106,6 +106,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress --yes
       - name: Build Windows x64 installer
         shell: pwsh
         run: ./2026-10-26-build-windows.ps1
