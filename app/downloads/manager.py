@@ -48,12 +48,18 @@ class DownloadManager:
             last_error: Exception | None = None
             for attempt in range(self.retries + 1):
                 try:
+                    partial_size = tmp.stat().st_size if tmp.exists() else 0
+                    request_headers = dict(headers or {})
+                    if partial_size:
+                        request_headers["Range"] = f"bytes={partial_size}-"
                     async with (
                         httpx.AsyncClient(follow_redirects=True, timeout=None) as client,
-                        client.stream("GET", url, headers=headers) as response,
+                        client.stream("GET", url, headers=request_headers) as response,
                     ):
                         response.raise_for_status()
-                        with tmp.open("wb") as handle:
+                        resumed = partial_size > 0 and response.status_code == 206
+                        mode = "ab" if resumed else "wb"
+                        with tmp.open(mode) as handle:
                             async for chunk in response.aiter_bytes(1024 * 1024):
                                 if chunk:
                                     handle.write(chunk)
@@ -62,8 +68,6 @@ class DownloadManager:
                 except Exception as exc:  # noqa: BLE001
                     last_error = exc
                     logger.warning("Download failed attempt %s for %s: %s", attempt + 1, url, exc)
-                    if tmp.exists():
-                        tmp.unlink()
                     await asyncio.sleep(1 + attempt)
             raise RuntimeError(f"download failed for {url}: {last_error}")
 

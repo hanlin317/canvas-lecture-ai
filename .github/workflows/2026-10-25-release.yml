@@ -71,35 +71,74 @@ jobs:
 
   build-macos:
     needs: validate
-    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+            whisper: mlx
+          - runner: macos-15-intel
+            arch: x64
+            whisper: faster-whisper
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-      - name: Build arm64 DMG
+      - name: Import Apple signing certificate when configured
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          if [[ -z "$MACOS_CERTIFICATE_P12" ]]; then exit 0; fi
+          KEYCHAIN="$RUNNER_TEMP/canvas-lecture-ai.keychain-db"
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          security create-keychain -p actions "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p actions "$KEYCHAIN"
+          security import "$RUNNER_TEMP/signing.p12" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security list-keychain -d user -s "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -s -k actions "$KEYCHAIN"
+      - name: Build ${{ matrix.arch }} DMG
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+          MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
         run: bash 2026-10-25-build-macos.sh
       - name: Verify packaged macOS runtime
         run: |
           DLM_DATA_DIR="$RUNNER_TEMP/dlm-self-check" \
             'dist/Canvas Lecture AI.app/Contents/MacOS/Canvas Lecture AI' \
             self-check --output "$RUNNER_TEMP/dlm-self-check.json"
-          python -c 'import json, os; data=json.load(open(os.environ["RUNNER_TEMP"] + "/dlm-self-check.json")); assert data["status"] == "ok" and data["local_whisper"] and data["whisper_engine"] == "mlx" and all(data["document_exporters"].values())'
+          python -c 'import json, os; data=json.load(open(os.environ["RUNNER_TEMP"] + "/dlm-self-check.json")); assert data["status"] == "ok" and data["local_whisper"] and data["whisper_engine"] == "${{ matrix.whisper }}" and all(data["document_exporters"].values())'
           codesign --verify --deep --strict 'dist/Canvas Lecture AI.app'
           APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 'dist/Canvas Lecture AI.app/Contents/Info.plist')"
           test "$APP_VERSION" = "${{ needs.validate.outputs.version }}"
           cd dist && shasum -a 256 -c *.dmg.sha256
       - uses: actions/upload-artifact@v4
         with:
-          name: canvas-lecture-ai-v${{ needs.validate.outputs.version }}-macos-arm64
+          name: canvas-lecture-ai-v${{ needs.validate.outputs.version }}-macos-${{ matrix.arch }}
           path: |
             dist/*.dmg
             dist/*.dmg.sha256
 
   build-windows:
     needs: validate
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x64
+            whisper: faster-whisper
+          - runner: windows-11-arm
+            arch: arm64
+            whisper: none
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -109,7 +148,10 @@ jobs:
       - name: Install Inno Setup
         shell: pwsh
         run: choco install innosetup --no-progress --yes
-      - name: Build Windows x64 installer
+      - name: Build Windows ${{ matrix.arch }} installer
+        env:
+          WINDOWS_SIGNING_CERTIFICATE_PFX: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PFX }}
+          WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
         shell: pwsh
         run: ./2026-10-26-build-windows.ps1
       - name: Verify packaged Windows runtime
@@ -119,15 +161,18 @@ jobs:
           & "dist\Canvas Lecture AI\Canvas Lecture AI.exe" self-check --output "$env:RUNNER_TEMP\dlm-self-check.json"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $data = Get-Content "$env:RUNNER_TEMP\dlm-self-check.json" | ConvertFrom-Json
-          if ($data.status -ne "ok" -or -not $data.local_whisper -or $data.whisper_engine -ne "faster-whisper") { exit 1 }
+          if ($data.status -ne "ok") { exit 1 }
+          if ("${{ matrix.whisper }}" -eq "none") {
+            if ($data.local_whisper) { exit 1 }
+          } elseif (-not $data.local_whisper -or $data.whisper_engine -ne "${{ matrix.whisper }}") { exit 1 }
           if (-not $data.document_exporters.docx -or -not $data.document_exporters.markdown_it -or -not $data.document_exporters.reportlab) { exit 1 }
-          Get-Content "dist\Canvas-Lecture-AI-v${{ needs.validate.outputs.version }}-windows-x64-setup.exe.sha256"
+          Get-Content "dist\Canvas-Lecture-AI-v${{ needs.validate.outputs.version }}-windows-${{ matrix.arch }}-setup.exe.sha256"
       - uses: actions/upload-artifact@v4
         with:
-          name: canvas-lecture-ai-v${{ needs.validate.outputs.version }}-windows-x64
+          name: canvas-lecture-ai-v${{ needs.validate.outputs.version }}-windows-${{ matrix.arch }}
           path: |
-            dist/*-windows-x64-setup.exe
-            dist/*-windows-x64-setup.exe.sha256
+            dist/*-windows-${{ matrix.arch }}-setup.exe
+            dist/*-windows-${{ matrix.arch }}-setup.exe.sha256
 
   publish:
     if: startsWith(github.ref, 'refs/tags/')
@@ -162,8 +207,10 @@ jobs:
           root = Path("release-dist")
           version = os.environ["VERSION"]
           repo = os.environ["GITHUB_REPOSITORY"]
-          mac = root / f"Canvas-Lecture-AI-v{version}-arm64.dmg"
-          windows = root / f"Canvas-Lecture-AI-v{version}-windows-x64-setup.exe"
+          mac_arm = root / f"Canvas-Lecture-AI-v{version}-arm64.dmg"
+          mac_x64 = root / f"Canvas-Lecture-AI-v{version}-x64.dmg"
+          windows_x64 = root / f"Canvas-Lecture-AI-v{version}-windows-x64-setup.exe"
+          windows_arm = root / f"Canvas-Lecture-AI-v{version}-windows-arm64-setup.exe"
 
           def asset(path, **extra):
               return {
@@ -176,8 +223,10 @@ jobs:
 
           manifest = {
               "platforms": {
-                  "macos-arm64": asset(mac, app_name="Canvas Lecture AI.app", installer_kind="dmg", minimum_os="14.0"),
-                  "windows-x64": asset(windows, app_name="Canvas Lecture AI", installer_kind="inno", minimum_os="10"),
+                  "macos-arm64": asset(mac_arm, app_name="Canvas Lecture AI.app", installer_kind="dmg", minimum_os="14.0"),
+                  "macos-x64": asset(mac_x64, app_name="Canvas Lecture AI.app", installer_kind="dmg", minimum_os="14.0"),
+                  "windows-x64": asset(windows_x64, app_name="Canvas Lecture AI", installer_kind="inno", minimum_os="10"),
+                  "windows-arm64": asset(windows_arm, app_name="Canvas Lecture AI", installer_kind="inno", minimum_os="11"),
               },
               "release_url": f"https://github.com/{repo}/releases/tag/v{version}",
               "version": version,

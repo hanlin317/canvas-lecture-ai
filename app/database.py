@@ -3,10 +3,20 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterable
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from app.models import Asset, Course, JobRecord, Lecture, ProcessingRecord, Topic
+from app.models import (
+    Asset,
+    Course,
+    JobItemRecord,
+    JobRecord,
+    Lecture,
+    NoteDraft,
+    ProcessingRecord,
+    Topic,
+)
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -97,7 +107,35 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at TEXT NOT NULL,
   started_at TEXT,
   updated_at TEXT NOT NULL,
-  finished_at TEXT
+  finished_at TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS job_items (
+  id INTEGER PRIMARY KEY,
+  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  lecture_id INTEGER NOT NULL REFERENCES lectures(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  current_stage TEXT NOT NULL DEFAULT 'Queued',
+  completed_steps INTEGER NOT NULL DEFAULT 0,
+  total_steps INTEGER NOT NULL DEFAULT 1,
+  error_message TEXT,
+  updated_at TEXT NOT NULL,
+  UNIQUE(job_id, lecture_id)
+);
+
+CREATE TABLE IF NOT EXISTS profiles (
+  scope TEXT PRIMARY KEY,
+  data_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS note_drafts (
+  processing_id INTEGER PRIMARY KEY REFERENCES processing(id) ON DELETE CASCADE,
+  lecture_id INTEGER NOT NULL REFERENCES lectures(id) ON DELETE CASCADE,
+  markdown TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS provider_models (
@@ -139,6 +177,27 @@ class Database:
                 conn.execute("ALTER TABLE courses ADD COLUMN group_name TEXT")
             if "is_active" not in course_columns:
                 conn.execute("ALTER TABLE courses ADD COLUMN is_active INTEGER NOT NULL DEFAULT 0")
+            job_columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
+            if "payload_json" not in job_columns:
+                conn.execute("ALTER TABLE jobs ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'")
+
+    def reconcile_interrupted_jobs(self) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE jobs
+                SET status = 'paused',
+                    current_step = 'Paused after application restart'
+                WHERE kind = 'pipeline' AND status IN ('queued', 'running', 'pausing', 'cancelling')
+                """
+            )
+            conn.execute(
+                """
+                UPDATE job_items
+                SET status = 'paused', current_stage = 'Paused after application restart'
+                WHERE status = 'running'
+                """
+            )
 
     def upsert_course(self, course: Course) -> Course:
         with self.connect() as conn:
@@ -350,13 +409,36 @@ class Database:
             row = conn.execute("SELECT * FROM processing WHERE id = ?", (processing_id,)).fetchone()
             return dict(row) if row else None
 
+    def get_latest_processing(self, lecture_id: int, stage: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM processing
+                WHERE lecture_id = ? AND stage = ?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (lecture_id, stage),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def update_processing_output(self, processing_id: int, output_file: str) -> None:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE processing SET output_file = ?, updated_at = ? WHERE id = ?",
+                (output_file, datetime.now(UTC).isoformat(), processing_id),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError("processing record not found")
+
     def create_job(self, job: JobRecord) -> JobRecord:
         with self.connect() as conn:
             conn.execute(
                 """
                 INSERT INTO jobs(id, kind, status, course_code, current_step, completed_steps,
-                  total_steps, message, error_message, created_at, started_at, updated_at, finished_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  total_steps, message, error_message, created_at, started_at, updated_at, finished_at,
+                  payload_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.id,
@@ -372,6 +454,7 @@ class Database:
                     job.started_at,
                     job.updated_at,
                     job.finished_at,
+                    job.payload_json,
                 ),
             )
         return job
@@ -380,6 +463,13 @@ class Database:
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
             return JobRecord(**dict(row)) if row else None
+
+    def list_jobs(self, limit: int = 20) -> list[JobRecord]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+            return [JobRecord(**dict(row)) for row in rows]
 
     def update_job(self, job_id: str, **changes: Any) -> JobRecord:
         allowed = {
@@ -393,6 +483,7 @@ class Database:
             "started_at",
             "updated_at",
             "finished_at",
+            "payload_json",
         }
         invalid = set(changes) - allowed
         if invalid:
@@ -413,6 +504,133 @@ class Database:
             row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
             return JobRecord(**dict(row))
 
+    def create_job_items(self, items: list[JobItemRecord]) -> None:
+        with self.connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO job_items(job_id, lecture_id, position, status, current_stage,
+                  completed_steps, total_steps, error_message, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(job_id, lecture_id) DO UPDATE SET
+                  position=excluded.position,
+                  status=excluded.status,
+                  current_stage=excluded.current_stage,
+                  completed_steps=excluded.completed_steps,
+                  total_steps=excluded.total_steps,
+                  error_message=excluded.error_message,
+                  updated_at=excluded.updated_at
+                """,
+                [
+                    (
+                        item.job_id,
+                        item.lecture_id,
+                        item.position,
+                        item.status,
+                        item.current_stage,
+                        item.completed_steps,
+                        item.total_steps,
+                        item.error_message,
+                        item.updated_at,
+                    )
+                    for item in items
+                ],
+            )
+
+    def list_job_items(self, job_id: str) -> list[JobItemRecord]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM job_items WHERE job_id = ? ORDER BY position, id", (job_id,)
+            ).fetchall()
+            return [JobItemRecord(**dict(row)) for row in rows]
+
+    def update_job_item(self, job_id: str, lecture_id: int, **changes: Any) -> JobItemRecord:
+        allowed = {
+            "position",
+            "status",
+            "current_stage",
+            "completed_steps",
+            "total_steps",
+            "error_message",
+            "updated_at",
+        }
+        invalid = set(changes) - allowed
+        if invalid:
+            raise ValueError(f"Unsupported job item field(s): {', '.join(sorted(invalid))}")
+        assignments = ", ".join(f"{column} = ?" for column in changes)
+        with self.connect() as conn:
+            if changes:
+                conn.execute(
+                    f"UPDATE job_items SET {assignments} WHERE job_id = ? AND lecture_id = ?",
+                    (*changes.values(), job_id, lecture_id),
+                )
+            row = conn.execute(
+                "SELECT * FROM job_items WHERE job_id = ? AND lecture_id = ?",
+                (job_id, lecture_id),
+            ).fetchone()
+            if not row:
+                raise ValueError("job item not found")
+            return JobItemRecord(**dict(row))
+
+    def reorder_job_items(self, job_id: str, lecture_ids: list[int]) -> None:
+        with self.connect() as conn:
+            existing = {
+                int(row["lecture_id"])
+                for row in conn.execute(
+                    "SELECT lecture_id FROM job_items WHERE job_id = ?", (job_id,)
+                )
+            }
+            if set(lecture_ids) != existing or len(lecture_ids) != len(existing):
+                raise ValueError("Reorder must include every lecture exactly once.")
+            for position, lecture_id in enumerate(lecture_ids, start=1):
+                conn.execute(
+                    "UPDATE job_items SET position = ? WHERE job_id = ? AND lecture_id = ?",
+                    (position, job_id, lecture_id),
+                )
+
+    def save_profile(self, scope: str, data: dict[str, Any], updated_at: str) -> None:
+        import json
+
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO profiles(scope, data_json, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(scope) DO UPDATE SET
+                  data_json=excluded.data_json,
+                  updated_at=excluded.updated_at
+                """,
+                (scope, json.dumps(data, separators=(",", ":")), updated_at),
+            )
+
+    def get_profile(self, scope: str) -> dict[str, Any] | None:
+        import json
+
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT data_json FROM profiles WHERE scope = ?", (scope,)
+            ).fetchone()
+            return json.loads(row["data_json"]) if row else None
+
+    def upsert_note_draft(self, draft: NoteDraft) -> NoteDraft:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO note_drafts(processing_id, lecture_id, markdown, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(processing_id) DO UPDATE SET
+                  markdown=excluded.markdown,
+                  updated_at=excluded.updated_at
+                """,
+                (draft.processing_id, draft.lecture_id, draft.markdown, draft.updated_at),
+            )
+        return draft
+
+    def get_note_draft(self, processing_id: int) -> NoteDraft | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM note_drafts WHERE processing_id = ?", (processing_id,)
+            ).fetchone()
+            return NoteDraft(**dict(row)) if row else None
+
     def upsert_asset(self, asset: Asset) -> Asset:
         with self.connect() as conn:
             conn.execute(
@@ -424,7 +642,11 @@ class Database:
                   remote_url=COALESCE(excluded.remote_url, assets.remote_url),
                   local_path=COALESCE(excluded.local_path, assets.local_path),
                   size_bytes=COALESCE(excluded.size_bytes, assets.size_bytes),
-                  status=excluded.status,
+                  status=CASE
+                    WHEN assets.remote_url = excluded.remote_url AND assets.status = 'complete'
+                    THEN assets.status
+                    ELSE excluded.status
+                  END,
                   checksum=COALESCE(excluded.checksum, assets.checksum),
                   transcript_source=COALESCE(excluded.transcript_source, assets.transcript_source),
                   notebooklm_path=COALESCE(excluded.notebooklm_path, assets.notebooklm_path),

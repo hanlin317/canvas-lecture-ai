@@ -1,6 +1,6 @@
 [project]
 name = "canvas-lecture-ai"
-version = "0.5.0"
+version = "0.6.0"
 description = "Canvas lecture downloader and AI notes generator for macOS and Windows"
 readme = "README.md"
 license = {file = "2026-10-25-LICENSE.md"}
@@ -34,7 +34,7 @@ dependencies = [
   "packaging>=24.0",
   "mlx-whisper>=0.4.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
   "mlx>=0.23.2,<0.24; sys_platform == 'darwin' and platform_machine == 'arm64'",
-  "faster-whisper>=1.2; sys_platform == 'win32'",
+  "faster-whisper>=1.2; (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'darwin' and platform_machine == 'x86_64')",
   "keyring>=25.6; sys_platform == 'win32'",
 ]
 

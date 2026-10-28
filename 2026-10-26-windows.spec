@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import importlib.util
 from pathlib import Path
 
 from imageio_ffmpeg import get_ffmpeg_exe
@@ -14,8 +15,15 @@ if not PLAYWRIGHT_BROWSERS.is_dir():
         "PyInstaller directly."
     )
 
-faster_datas, faster_binaries, faster_hiddenimports = collect_all("faster_whisper")
-ctranslate_datas, ctranslate_binaries, ctranslate_hiddenimports = collect_all("ctranslate2")
+faster_datas = []
+faster_binaries = []
+faster_hiddenimports = []
+ctranslate_datas = []
+ctranslate_binaries = []
+ctranslate_hiddenimports = []
+if importlib.util.find_spec("faster_whisper") is not None:
+    faster_datas, faster_binaries, faster_hiddenimports = collect_all("faster_whisper")
+    ctranslate_datas, ctranslate_binaries, ctranslate_hiddenimports = collect_all("ctranslate2")
 
 datas = [
     (str(ROOT / "app" / "web" / "templates"), "app/web/templates"),

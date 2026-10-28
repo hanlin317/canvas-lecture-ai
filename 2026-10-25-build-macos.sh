@@ -5,14 +5,19 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-BUILD_VENV="$ROOT/build/packaging-venv"
+MACHINE="$(uname -m)"
+ARCH="arm64"
+if [[ "$MACHINE" == "x86_64" ]]; then
+  ARCH="x64"
+fi
+BUILD_VENV="$ROOT/build/packaging-venv-$ARCH"
 BROWSER_DIR="$ROOT/build/playwright-browsers"
 DIST_DIR="$ROOT/dist"
-WORK_DIR="$ROOT/build/pyinstaller-work"
+WORK_DIR="$ROOT/build/pyinstaller-work-$ARCH"
 STAGE_DIR="$ROOT/build/2026-10-25-dmg-stage-$$"
 VERSION="$($PYTHON_BIN -c 'import pathlib,tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
 APP_NAME="Canvas Lecture AI"
-DMG_PATH="$DIST_DIR/Canvas-Lecture-AI-v$VERSION-arm64.dmg"
+DMG_PATH="$DIST_DIR/Canvas-Lecture-AI-v$VERSION-$ARCH.dmg"
 
 mkdir -p "$ROOT/build" "$DIST_DIR"
 
@@ -39,7 +44,8 @@ ditto "$BROWSER_DIR" "$APP_PATH/Contents/Resources/playwright-browsers"
 if [[ ! -e "$APP_PATH/Contents/Frameworks/playwright-browsers" ]]; then
   ln -s ../Resources/playwright-browsers "$APP_PATH/Contents/Frameworks/playwright-browsers"
 fi
-codesign --force --deep --sign - "$APP_PATH"
+SIGNING_IDENTITY="${MACOS_SIGNING_IDENTITY:--}"
+codesign --force --deep --options runtime --sign "$SIGNING_IDENTITY" "$APP_PATH"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
 mkdir -p "$STAGE_DIR"
@@ -54,6 +60,19 @@ hdiutil create \
   -format UDZO \
   -ov \
   "$DMG_PATH"
+
+if [[ "$SIGNING_IDENTITY" != "-" ]]; then
+  codesign --force --sign "$SIGNING_IDENTITY" "$DMG_PATH"
+fi
+
+if [[ -n "${MACOS_NOTARY_APPLE_ID:-}" && -n "${MACOS_NOTARY_TEAM_ID:-}" && -n "${MACOS_NOTARY_PASSWORD:-}" ]]; then
+  xcrun notarytool submit "$DMG_PATH" \
+    --apple-id "$MACOS_NOTARY_APPLE_ID" \
+    --team-id "$MACOS_NOTARY_TEAM_ID" \
+    --password "$MACOS_NOTARY_PASSWORD" \
+    --wait
+  xcrun stapler staple "$DMG_PATH"
+fi
 
 (cd "$DIST_DIR" && shasum -a 256 "$(basename "$DMG_PATH")" > "$(basename "$DMG_PATH").sha256")
 printf 'Built %s\n' "$DMG_PATH"

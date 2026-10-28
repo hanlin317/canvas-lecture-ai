@@ -45,9 +45,9 @@ def release_notes(
         notes += f"\n\n**Full changes:** [{previous_version}...{version}]({comparison})"
     notes += (
         "\n\n### Installation\n\n"
-        "On Apple Silicon Macs, download the versioned DMG, open it, and drag Canvas Lecture AI "
-        "into Applications. On 64-bit Windows 10 or 11, download and run the versioned "
-        "windows-x64 setup executable.\n\n"
+        "On macOS, choose the arm64 DMG for Apple Silicon or the x64 DMG for an Intel Mac, open "
+        "it, and drag Canvas Lecture AI into Applications. On Windows, choose the x64 installer "
+        "for Intel/AMD computers or the arm64 installer for Windows 11 ARM devices.\n\n"
         "### Updating\n\n"
         "Existing packaged installations can install this release through the signed in-app "
         "updater. Source installations should update with Git."

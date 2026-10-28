@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Edit {{ lecture.display_title }} - Canvas Lecture AI</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20261029-1">
+</head>
+<body>
+  <header class="editor-header">
+    <div>
+      <a class="header-link" href="/?course={{ course.code if course else '' }}">Back to lectures</a>
+      <h1>{{ lecture.display_title }}</h1>
+      <p>{{ course.code if course else '' }} · AI note workspace</p>
+    </div>
+  </header>
+
+  <main class="note-editor-main">
+    {% if error %}<section class="alert error wide">{{ error }}</section>{% endif %}
+    {% if message %}<section class="alert message wide">{{ message }}</section>{% endif %}
+
+    <section class="note-editor-toolbar" aria-label="Note actions">
+      <form method="post" action="/notes/{{ record.id }}/save" class="note-save-form">
+        <label for="note-format">Export format</label>
+        <select id="note-format" name="note_format">
+          <option value="markdown">Markdown</option>
+          <option value="pdf">PDF</option>
+          <option value="docx">Word</option>
+        </select>
+        <input type="hidden" name="markdown" value="">
+        <button type="submit" data-export-note>Save and export</button>
+      </form>
+      <a class="secondary-button" href="/outputs/{{ record.id }}">Open latest export</a>
+    </section>
+
+    <section class="note-editor-layout">
+      <form method="post" action="/notes/{{ record.id }}/save" class="note-editor-form">
+        <input type="hidden" name="note_format" value="markdown">
+        <label for="note-markdown">Editable note</label>
+        <textarea id="note-markdown" name="markdown" spellcheck="true">{{ draft.markdown }}</textarea>
+        <button type="submit">Save Markdown</button>
+      </form>
+
+      <aside class="section-regenerator">
+        <h2>Regenerate a section</h2>
+        {% if ai_enabled %}
+        <form method="post" action="/notes/{{ record.id }}/regenerate">
+          <label for="section-heading">Exact heading</label>
+          <input id="section-heading" name="section_heading" placeholder="Clinical considerations" required>
+          <label for="section-instructions">Instructions</label>
+          <textarea id="section-instructions" name="section_instructions" rows="7" maxlength="2000" placeholder="Make this section more concise and emphasize contraindications."></textarea>
+          <button type="submit">Regenerate section</button>
+        </form>
+        {% else %}
+        <p>Enable an AI provider in Settings to regenerate individual sections.</p>
+        {% endif %}
+        <p class="privacy-note">Only the transcript and your section request are sent to the configured AI provider.</p>
+      </aside>
+    </section>
+  </main>
+  <script>
+    const note = document.getElementById('note-markdown');
+    document.querySelector('[data-export-note]').closest('form').addEventListener('submit', (event) => {
+      event.currentTarget.querySelector('input[name="markdown"]').value = note.value;
+    });
+  </script>
+</body>
+</html>

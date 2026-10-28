@@ -68,8 +68,8 @@ def transcribe_with_local_whisper(
     engine = local_whisper_engine(command)
     if engine is None:
         raise WhisperUnavailable(
-            "Local transcription is unavailable. Install MLX Whisper on macOS or "
-            "Faster Whisper on Windows."
+            "Local transcription is unavailable on this installation. Official Echo360 "
+            "transcripts can still be used."
         )
     output_txt.parent.mkdir(parents=True, exist_ok=True)
     if engine == "mlx":

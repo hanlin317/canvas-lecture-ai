@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
+import zipfile
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
@@ -16,7 +18,15 @@ from app.ai.factory import AIModelSpec
 from app.config import load_settings
 from app.database import Database
 from app.main import create_app
-from app.models import Course, JobRecord, Lecture, ProcessingRecord, Topic
+from app.models import (
+    Course,
+    JobItemRecord,
+    JobRecord,
+    Lecture,
+    NoteDraft,
+    ProcessingRecord,
+    Topic,
+)
 from app.web import routes as web_routes
 
 
@@ -55,6 +65,114 @@ def test_index_page_renders(tmp_path, monkeypatch) -> None:
     assert "Open NotebookLM" in response.text
     assert "Show source files" in response.text
     assert "Configured" in response.text
+    assert "System readiness" in response.text
+    assert 'id="privacy-mode"' in response.text
+    assert "Exam revision" in response.text
+    assert "Export sanitized diagnostics" in response.text
+
+
+def test_preflight_and_diagnostics_exclude_private_content(tmp_path, monkeypatch) -> None:
+    downloads = tmp_path / "Private Lectures"
+    downloads.mkdir()
+    config = tmp_path / "config.toml"
+    database = tmp_path / "test.sqlite3"
+    config.write_text(
+        f"[app]\ndatabase_path = '{database}'\n"
+        f"[paths]\ndownload_root = '{downloads}'\n"
+        f"notebooklm_staging_dir = '{downloads}'\n"
+        "[canvas]\nbase_url = 'https://canvas.example'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DLM_CONFIG", str(config))
+    client = TestClient(create_app())
+
+    preflight = client.get("/system/preflight")
+    diagnostics = client.get("/system/diagnostics")
+
+    assert preflight.status_code == 200
+    assert any(item["id"] == "disk_space" for item in preflight.json()["checks"])
+    assert diagnostics.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(diagnostics.content)) as archive:
+        payload = archive.read("diagnostics.json").decode()
+        readme = archive.read("README.txt").decode()
+    assert str(tmp_path) not in payload
+    assert "canvas.example" not in payload
+    assert "excludes API keys" in readme
+
+
+def test_course_profile_round_trip(tmp_path, monkeypatch) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(f"[app]\ndatabase_path = '{tmp_path / 'test.sqlite3'}'\n", encoding="utf-8")
+    monkeypatch.setenv("DLM_CONFIG", str(config))
+    db = Database(tmp_path / "test.sqlite3")
+    course = db.upsert_course(Course(canvas_id="1", code="TEST1000", name="Test"))
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/profiles/save",
+        data={
+            "scope": "course",
+            "course_id": str(course.id),
+            "course_code": course.code,
+            "download_video": "on",
+            "privacy_mode": "local_only",
+            "conflict_policy": "keep_both",
+            "prompt_template": "exam_revision",
+        },
+        follow_redirects=False,
+    )
+
+    profile = db.get_profile(f"course:{course.id}")
+    assert response.status_code == 303
+    assert profile["download_video"] is True
+    assert profile["privacy_mode"] == "local_only"
+    assert profile["conflict_policy"] == "keep_both"
+    assert profile["prompt_template"] == "exam_revision"
+
+
+def test_local_privacy_mode_rejects_cloud_ai(tmp_path, monkeypatch) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f"[app]\ndatabase_path = '{tmp_path / 'test.sqlite3'}'\n[ai]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DLM_CONFIG", str(config))
+    response = TestClient(create_app()).post(
+        "/pipeline",
+        data={"lecture_ids": "1", "ai_notes": "on", "privacy_mode": "local_only"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "Cloud+AI+notes+are+unavailable" in response.headers["location"]
+
+
+def test_note_editor_reads_saved_draft(tmp_path, monkeypatch) -> None:
+    config = tmp_path / "config.toml"
+    database = tmp_path / "test.sqlite3"
+    config.write_text(f"[app]\ndatabase_path = '{database}'\n", encoding="utf-8")
+    monkeypatch.setenv("DLM_CONFIG", str(config))
+    db = Database(database)
+    course = db.upsert_course(Course(canvas_id="1", code="TEST1000", name="Test"))
+    lecture = db.upsert_lecture(
+        Lecture(source_id="lecture-1", course_id=course.id or 0, original_title="Occlusion")
+    )
+    record = db.upsert_processing(
+        ProcessingRecord(lecture_id=lecture.id or 0, stage="ai_note", status="complete")
+    )
+    db.upsert_note_draft(
+        NoteDraft(
+            processing_id=record.id or 0,
+            lecture_id=lecture.id or 0,
+            markdown="# Occlusion\n\nEditable content",
+        )
+    )
+
+    response = TestClient(create_app()).get(f"/notes/{record.id}")
+
+    assert response.status_code == 200
+    assert "AI note workspace" in response.text
+    assert "Editable content" in response.text
+    assert "Regenerate a section" in response.text
 
 
 def test_first_run_requires_canvas_setup_before_login(tmp_path, monkeypatch) -> None:
@@ -635,6 +753,7 @@ def test_update_manifest_signature_accepts_authentic_content_and_rejects_tamperi
 
 def test_cross_platform_update_manifest_selects_windows_asset(monkeypatch) -> None:
     monkeypatch.setattr(web_routes.sys, "platform", "win32")
+    monkeypatch.setattr(web_routes.platform, "machine", lambda: "AMD64")
     manifest = {
         "version": "9.9.9",
         "platforms": {
@@ -651,6 +770,26 @@ def test_cross_platform_update_manifest_selects_windows_asset(monkeypatch) -> No
 
     assert selected["platform"] == "windows-x64"
     assert selected["file_name"] == "setup.exe"
+
+
+def test_cross_platform_update_manifest_selects_windows_arm_asset(monkeypatch) -> None:
+    monkeypatch.setattr(web_routes.sys, "platform", "win32")
+    monkeypatch.setattr(web_routes.platform, "machine", lambda: "ARM64")
+    manifest = {
+        "version": "9.9.9",
+        "platforms": {
+            "windows-arm64": {
+                "download_url": "https://example.test/setup-arm64.exe",
+                "file_name": "setup-arm64.exe",
+                "sha256": "b" * 64,
+                "size": 456,
+            }
+        },
+    }
+
+    selected = web_routes._select_platform_update(manifest)
+
+    assert selected["file_name"] == "setup-arm64.exe"
 
 
 def test_update_install_is_unavailable_when_running_from_source(monkeypatch) -> None:
@@ -675,6 +814,7 @@ def test_running_job_status_includes_eta(tmp_path, monkeypatch) -> None:
         encoding="utf-8",
     )
     monkeypatch.setenv("DLM_CONFIG", str(config))
+    app = create_app()
     db = Database(db_path)
     started = (datetime.now(UTC) - timedelta(seconds=12)).isoformat()
     db.create_job(
@@ -688,12 +828,61 @@ def test_running_job_status_includes_eta(tmp_path, monkeypatch) -> None:
             started_at=started,
         )
     )
-    client = TestClient(create_app())
+    client = TestClient(app)
 
     payload = client.get("/jobs/job-eta").json()
 
     assert payload["progress_percent"] == 33
     assert 23 <= payload["eta_seconds"] <= 25
+
+
+def test_job_history_renders_items_and_reorders_when_paused(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "test.sqlite3"
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f"[app]\ndatabase_path = '{db_path}'\n"
+        f"[canvas]\nbase_url = 'https://canvas.example'\nstate_path = '{tmp_path / 'state.json'}'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DLM_CONFIG", str(config))
+    db = Database(db_path)
+    course = db.upsert_course(Course(canvas_id="1", code="TEST1000", name="Test"))
+    first = db.upsert_lecture(
+        Lecture(source_id="one", course_id=course.id or 0, original_title="First")
+    )
+    second = db.upsert_lecture(
+        Lecture(source_id="two", course_id=course.id or 0, original_title="Second")
+    )
+    db.create_job(
+        JobRecord(
+            id="job-history",
+            kind="pipeline",
+            status="paused",
+            payload_json=f'{{"lecture_ids":[{first.id},{second.id}],"options":{{}}}}',
+        )
+    )
+    db.create_job_items(
+        [
+            JobItemRecord(job_id="job-history", lecture_id=first.id or 0, position=1),
+            JobItemRecord(job_id="job-history", lecture_id=second.id or 0, position=2),
+        ]
+    )
+    client = TestClient(create_app())
+
+    page = client.get("/")
+    reordered = client.post(
+        "/jobs/job-history/reorder",
+        files=[
+            ("lecture_ids", (None, str(second.id))),
+            ("lecture_ids", (None, str(first.id))),
+        ],
+    )
+
+    assert page.status_code == 200
+    assert 'data-history-job="job-history"' in page.text
+    assert 'data-move-item="up"' in page.text
+    assert reordered.status_code == 200
+    assert [item.lecture_id for item in db.list_job_items("job-history")] == [second.id, first.id]
 
 
 @pytest.mark.asyncio
