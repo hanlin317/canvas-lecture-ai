@@ -6,6 +6,38 @@ immutable.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-29
+
+### Added
+
+- Persistent multi-lecture queues with per-lecture progress, pause, resume, skip, retry, and queue
+  reordering. Interrupted pipeline jobs return as paused work after an application restart.
+- Resumable media downloads, checksum tracking, and explicit skip, replace, keep-both, and
+  update-changed policies for existing files.
+- An editable AI note workspace with Markdown saving, native PDF and Word export, exact-section
+  regeneration, six study-note templates, and global or per-course pipeline profiles.
+- Downloads-only, local-processing, and cloud-AI privacy modes with clear controls for when lecture
+  content may leave the computer.
+- A system-readiness panel and sanitized diagnostics export covering storage, FFmpeg, local
+  transcription, Canvas authentication, AI configuration, and Echo360 access.
+- Downloadable Intel Mac and Windows ARM64 packages alongside Apple Silicon and Windows x64 builds.
+- Optional Apple Developer ID signing and notarization plus optional Windows Authenticode signing in
+  the release workflow.
+
+### Changed
+
+- Improved transcript cleanup for repeated captions and common leading speech fillers.
+- Expanded job status displays with the current lecture, safe checkpoint, overall progress, and ETA.
+- Updated packaging, update manifests, release notes, privacy guidance, and security documentation
+  for four platform architectures.
+
+### Security
+
+- Diagnostics omit credentials, session files, signed media URLs, lecture titles, transcripts,
+  generated notes, local paths, and API keys.
+- Release signing credentials are read only from GitHub Actions secrets and are never bundled with
+  the application.
+
 ## [0.5.0] - 2026-10-26
 
 ### Added
@@ -89,7 +121,8 @@ immutable.
 - Local SQLite state, processing history, course grouping, and a browser-based management interface.
 - Apple Silicon DMG packaging and the first GitHub release workflow.
 
-[Unreleased]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.2.0...v0.3.0

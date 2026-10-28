@@ -1,5 +1,47 @@
 PROMPT_VERSION = "2.0"
 
+PROMPT_TEMPLATES = {
+    "comprehensive": {
+        "label": "Comprehensive study notes",
+        "guidance": "Build a complete, logically ordered study resource from the lecture.",
+    },
+    "exam_revision": {
+        "label": "Exam revision",
+        "guidance": (
+            "Prioritize examinable facts, lecturer emphasis, common traps, recall prompts, "
+            "and concise exam-ready comparisons."
+        ),
+    },
+    "clinical_procedures": {
+        "label": "Clinical procedures",
+        "guidance": (
+            "Organize clinical content into indications, contraindications, preparation, "
+            "materials, numbered technique, complications, aftercare, and safety checks."
+        ),
+    },
+    "flashcards": {
+        "label": "Flashcards",
+        "guidance": (
+            "Produce compact question-and-answer pairs grouped by concept. Keep each answer "
+            "independently understandable and grounded in the transcript."
+        ),
+    },
+    "learning_objectives": {
+        "label": "Learning objectives",
+        "guidance": (
+            "Infer a short set of transcript-supported learning objectives, then organize the "
+            "notes under those objectives and finish with an objective-by-objective checklist."
+        ),
+    },
+    "concise_summary": {
+        "label": "Concise summary",
+        "guidance": (
+            "Create a compact overview containing only core concepts, decisive clinical points, "
+            "important numbers, and a short take-home checklist."
+        ),
+    },
+}
+
 NOTE_LENGTHS = {
     "concise": {
         "label": "Concise",
@@ -65,9 +107,11 @@ def build_study_note_prompt(
     transcript: str,
     *,
     note_length: str = "standard",
+    prompt_template: str = "comprehensive",
     custom_instructions: str = "",
 ) -> str:
     length = NOTE_LENGTHS.get(note_length, NOTE_LENGTHS["standard"])
+    template = PROMPT_TEMPLATES.get(prompt_template, PROMPT_TEMPLATES["comprehensive"])
     custom = custom_instructions.strip()
     custom_block = (
         f"\nUser-supplied note instructions:\n{custom}\n"
@@ -80,6 +124,8 @@ Lecture: {lecture} - {title}
 
 Requested length: {length["label"]} (approximately {length["words"]} words when the transcript supports it).
 Length guidance: {length["guidance"]}
+Note style: {template["label"]}
+Style guidance: {template["guidance"]}
 
 Create Markdown that renders cleanly in Obsidian, Word, and PDF. Organize sections according to the
 actual material rather than forcing empty headings. Where relevant, include learning objectives,

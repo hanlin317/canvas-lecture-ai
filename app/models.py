@@ -110,6 +110,27 @@ class JobRecord(BaseModel):
     started_at: str | None = None
     updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     finished_at: str | None = None
+    payload_json: str = "{}"
+
+
+class JobItemRecord(BaseModel):
+    id: int | None = None
+    job_id: str
+    lecture_id: int
+    position: int
+    status: str = "queued"
+    current_stage: str = "Queued"
+    completed_steps: int = 0
+    total_steps: int = 1
+    error_message: str | None = None
+    updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+
+
+class NoteDraft(BaseModel):
+    processing_id: int
+    lecture_id: int
+    markdown: str
+    updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
 class EchoVideoAsset(BaseModel):
@@ -156,6 +177,16 @@ class PipelineOptions(BaseModel):
     save_obsidian: bool = False
     overwrite: bool = False
     skip_existing: bool = True
+    conflict_policy: Literal["skip", "replace", "keep_both", "update_changed"] = "skip"
+    prompt_template: Literal[
+        "comprehensive",
+        "exam_revision",
+        "clinical_procedures",
+        "flashcards",
+        "learning_objectives",
+        "concise_summary",
+    ] = "comprehensive"
+    privacy_mode: Literal["downloads_only", "local_only", "cloud_ai"] = "cloud_ai"
 
 
 @dataclass(frozen=True)

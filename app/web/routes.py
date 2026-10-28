@@ -6,11 +6,14 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import plistlib
 import shlex
+import shutil
 import subprocess
 import sys
 import time
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
@@ -25,21 +28,25 @@ from fastapi.templating import Jinja2Templates
 from packaging.version import InvalidVersion, Version
 
 from app import __version__
+from app.ai.base import AIRequest
 from app.ai.factory import (
     AI_PROVIDER_SPECS,
     api_key_status,
     credential_store_label,
     fetch_provider_models,
+    get_ai_provider,
     get_ai_provider_spec,
     save_api_key,
 )
-from app.ai.prompts import NOTE_LENGTHS
+from app.ai.prompts import NOTE_LENGTHS, PROMPT_TEMPLATES, STUDY_NOTE_SYSTEM_PROMPT
 from app.canvas.client import CanvasClient
 from app.config import Settings, load_settings, save_web_settings
 from app.database import Database
-from app.models import JobRecord, PipelineOptions
+from app.downloads.manager import ffmpeg_executable
+from app.models import JobItemRecord, JobRecord, NoteDraft, PipelineOptions
+from app.obsidian.exporter import export_ai_note
 from app.services.discovery import DiscoveryService, _default_course_group
-from app.services.pipeline import PipelineService
+from app.services.pipeline import JobPaused, LectureCancelled, PipelineService
 from app.transcripts.whisper import local_whisper_available, local_whisper_engine
 from app.utils import expand_path
 
@@ -120,7 +127,10 @@ def selected_canvas_institution(canvas_url: str) -> str:
 
 
 def platform_asset_key() -> str:
-    return "windows-x64" if sys.platform == "win32" else "macos-arm64"
+    machine = platform.machine().lower()
+    if sys.platform == "win32":
+        return "windows-arm64" if machine in {"arm64", "aarch64"} else "windows-x64"
+    return "macos-arm64" if machine in {"arm64", "aarch64"} else "macos-x64"
 
 
 def platform_display_name() -> str:
@@ -520,6 +530,15 @@ async def install_update() -> dict:
 
 
 def mark_job_cancelled(db: Database, job_id: str) -> None:
+    for item in db.list_job_items(job_id):
+        if item.status == "running":
+            db.update_job_item(
+                job_id,
+                item.lecture_id,
+                status="paused",
+                current_stage="Stopped at a safe checkpoint",
+                updated_at=utc_now(),
+            )
     finished_at = utc_now()
     db.update_job(
         job_id,
@@ -617,16 +636,134 @@ async def run_pipeline_job(
     if job and job.status == "cancelled":
         ACTIVE_JOBS.pop(job_id, None)
         return
-    started_at = utc_now()
-    db.update_job(job_id, status="running", started_at=started_at, updated_at=started_at)
+    started_at = job.started_at if job and job.started_at else utc_now()
+    db.update_job(
+        job_id,
+        status="running",
+        started_at=started_at,
+        finished_at=None,
+        error_message=None,
+        updated_at=utc_now(),
+    )
+    results: list[dict] = []
+    service = PipelineService(db, settings)
+    steps_per_lecture = service.stage_count(options)
+
+    def aggregate_progress() -> int:
+        return sum(item.completed_steps for item in db.list_job_items(job_id))
+
     try:
-        results = await PipelineService(db, settings).run_many(
-            lecture_ids,
-            options,
-            progress=lambda message, completed, total: update_job_progress(
-                db, job_id, message, completed, total
-            ),
-        )
+        while True:
+            items = [
+                item
+                for item in db.list_job_items(job_id)
+                if item.status in {"queued", "paused", "running", "cancel_requested"}
+            ]
+            if not items:
+                break
+            item = items[0]
+            if item.status == "cancel_requested":
+                db.update_job_item(
+                    job_id,
+                    item.lecture_id,
+                    status="cancelled",
+                    current_stage="Skipped by user",
+                    updated_at=utc_now(),
+                )
+                continue
+            db.update_job_item(
+                job_id,
+                item.lecture_id,
+                status="running",
+                current_stage="Preparing",
+                total_steps=steps_per_lecture,
+                error_message=None,
+                updated_at=utc_now(),
+            )
+            current_lecture_id = item.lecture_id
+
+            def control(lecture_id: int) -> None:
+                latest_job = db.get_job(job_id)
+                latest_item = next(
+                    entry
+                    for entry in db.list_job_items(job_id)
+                    if entry.lecture_id == lecture_id
+                )
+                if latest_job and latest_job.status == "pausing":
+                    raise JobPaused("Job paused by user.")
+                if latest_item.status == "cancel_requested":
+                    raise LectureCancelled("Lecture skipped by user.")
+
+            def item_progress(
+                message: str,
+                completed: int,
+                total: int,
+                _lecture_id: int = current_lecture_id,
+            ) -> None:
+                control(_lecture_id)
+                db.update_job_item(
+                    job_id,
+                    _lecture_id,
+                    current_stage=message,
+                    completed_steps=min(completed, steps_per_lecture),
+                    total_steps=steps_per_lecture,
+                    updated_at=utc_now(),
+                )
+                update_job_progress(
+                    db,
+                    job_id,
+                    message,
+                    aggregate_progress(),
+                    steps_per_lecture * len(lecture_ids),
+                )
+
+            try:
+                result = await service.run_lecture(
+                    item.lecture_id,
+                    options,
+                    progress=item_progress,
+                    total_steps=steps_per_lecture,
+                    lecture_position=item.position,
+                    lecture_total=len(lecture_ids),
+                    control=control,
+                )
+                results.append(result)
+                db.update_job_item(
+                    job_id,
+                    item.lecture_id,
+                    status="completed",
+                    current_stage="Complete",
+                    completed_steps=steps_per_lecture,
+                    updated_at=utc_now(),
+                )
+            except LectureCancelled:
+                db.update_job_item(
+                    job_id,
+                    item.lecture_id,
+                    status="cancelled",
+                    current_stage="Skipped by user",
+                    updated_at=utc_now(),
+                )
+            except JobPaused:
+                db.update_job_item(
+                    job_id,
+                    item.lecture_id,
+                    status="paused",
+                    current_stage="Paused safely",
+                    updated_at=utc_now(),
+                )
+                raise
+            except Exception as exc:
+                logger.exception("Pipeline failed for lecture %s", item.lecture_id)
+                results.append({"lecture": str(item.lecture_id), "error": str(exc)})
+                db.update_job_item(
+                    job_id,
+                    item.lecture_id,
+                    status="failed",
+                    current_stage="Failed",
+                    error_message=str(exc),
+                    updated_at=utc_now(),
+                )
         message = pipeline_summary(len(lecture_ids), results)
         finished_at = utc_now()
         total_steps = PipelineService.stage_count(options) * len(lecture_ids)
@@ -639,6 +776,14 @@ async def run_pipeline_job(
             message=message,
             updated_at=finished_at,
             finished_at=finished_at,
+        )
+    except JobPaused:
+        db.update_job(
+            job_id,
+            status="paused",
+            current_step="Paused safely",
+            message="Resume when you are ready. Completed stages will be retained.",
+            updated_at=utc_now(),
         )
     except asyncio.CancelledError:
         mark_job_cancelled(db, job_id)
@@ -742,6 +887,178 @@ def obsidian_vault_status(value: str) -> dict[str, str]:
     return {"kind": "ok", "text": "Vault detected"}
 
 
+def _path_check(label: str, configured: str, *, required: bool = True) -> dict:
+    if not configured.strip():
+        return {
+            "id": label.lower().replace(" ", "_"),
+            "label": label,
+            "status": "failed" if required else "optional",
+            "detail": "Not configured",
+            "action": "Open Settings",
+        }
+    path = Path(configured).expanduser()
+    exists = path.is_dir()
+    writable = exists and os.access(path, os.W_OK)
+    return {
+        "id": label.lower().replace(" ", "_"),
+        "label": label,
+        "status": "passed" if writable else "failed",
+        "detail": "Ready" if writable else "Folder is missing or not writable",
+        "action": None if writable else "Choose folder",
+    }
+
+
+async def run_preflight_checks(
+    settings: Settings,
+    db: Database,
+    course_identifier: str = "",
+) -> list[dict]:
+    canvas = CanvasClient(settings)
+    checks = [
+        {
+            "id": "canvas_address",
+            "label": "Canvas address",
+            "status": "passed" if settings.canvas.base_url else "failed",
+            "detail": settings.canvas.base_url or "Not configured",
+            "action": None if settings.canvas.base_url else "Open Settings",
+        },
+        {
+            "id": "canvas_login",
+            "label": "Canvas login",
+            "status": "passed" if canvas.has_session() else "failed",
+            "detail": "Saved session found" if canvas.has_session() else "Login required",
+            "action": None if canvas.has_session() else "Login to Canvas",
+        },
+        _path_check("Download folder", settings.paths.download_root),
+        _path_check("NotebookLM folder", settings.paths.notebooklm_staging_dir),
+        _path_check("Obsidian vault", settings.paths.obsidian_vault, required=False),
+    ]
+    download_root = Path(settings.paths.download_root).expanduser()
+    if download_root.exists():
+        free_bytes = shutil.disk_usage(download_root).free
+        checks.append(
+            {
+                "id": "disk_space",
+                "label": "Free disk space",
+                "status": "passed" if free_bytes >= 2 * 1024**3 else "warning",
+                "detail": f"{free_bytes / 1024**3:.1f} GB available",
+                "action": None,
+            }
+        )
+    try:
+        ffmpeg_executable()
+        ffmpeg_status = ("passed", "FFmpeg available")
+    except RuntimeError as exc:
+        ffmpeg_status = ("failed", str(exc))
+    checks.append(
+        {
+            "id": "ffmpeg",
+            "label": "Video processing",
+            "status": ffmpeg_status[0],
+            "detail": ffmpeg_status[1],
+            "action": None if ffmpeg_status[0] == "passed" else "Reinstall application",
+        }
+    )
+    checks.append(
+        {
+            "id": "transcription",
+            "label": "Local transcription",
+            "status": (
+                "passed"
+                if settings.transcripts.whisper_enabled
+                and local_whisper_available(settings.transcripts.whisper_command)
+                else "optional"
+            ),
+            "detail": (
+                f"{whisper_display_name()} ready"
+                if local_whisper_available(settings.transcripts.whisper_command)
+                else "Official transcripts will still work"
+            ),
+            "action": None,
+        }
+    )
+    ai_ready = not settings.ai.enabled or api_key_status(settings.ai.provider) != "missing"
+    checks.append(
+        {
+            "id": "ai_provider",
+            "label": "AI notes",
+            "status": "passed" if ai_ready else "warning",
+            "detail": (
+                "Disabled by choice"
+                if not settings.ai.enabled
+                else f"{get_ai_provider_spec(settings.ai.provider).label}: "
+                f"{api_key_status(settings.ai.provider)}"
+            ),
+            "action": None if ai_ready else "Save API key",
+        }
+    )
+    course = db.get_course(course_identifier) if course_identifier else None
+    if course and canvas.has_session():
+        try:
+            links = await canvas.echo360_navigation_links(course.canvas_id)
+            echo_status = "passed" if links else "failed"
+            echo_detail = "Course launch link found" if links else "Echo360 link was not found"
+        except Exception as exc:  # noqa: BLE001
+            echo_status = "failed"
+            echo_detail = f"Could not verify access: {type(exc).__name__}"
+        checks.append(
+            {
+                "id": "echo360",
+                "label": "Echo360 access",
+                "status": echo_status,
+                "detail": echo_detail,
+                "action": None if echo_status == "passed" else "Open course in Canvas",
+            }
+        )
+    return checks
+
+
+def create_diagnostics_bundle(settings: Settings, db: Database) -> Path:
+    diagnostics_dir = expand_path("local_data/diagnostics")
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+    output = diagnostics_dir / f"{stamp}-canvas-lecture-ai-diagnostics.zip"
+    payload = {
+        "generated_at": utc_now(),
+        "app_version": __version__,
+        "platform": platform.platform(),
+        "python": platform.python_version(),
+        "packaged": bool(getattr(sys, "frozen", False)),
+        "canvas_configured": bool(settings.canvas.base_url),
+        "canvas_session_saved": CanvasClient(settings).has_session(),
+        "download_folder_exists": Path(settings.paths.download_root).expanduser().is_dir(),
+        "notebooklm_folder_exists": Path(settings.paths.notebooklm_staging_dir).expanduser().is_dir(),
+        "obsidian_configured": bool(settings.paths.obsidian_vault),
+        "ai_enabled": settings.ai.enabled,
+        "ai_provider": settings.ai.provider if settings.ai.enabled else None,
+        "ai_key_saved": (
+            api_key_status(settings.ai.provider) != "missing" if settings.ai.enabled else False
+        ),
+        "whisper_enabled": settings.transcripts.whisper_enabled,
+        "whisper_available": local_whisper_available(settings.transcripts.whisper_command),
+        "course_count": len(db.list_courses()),
+        "jobs": [
+            {
+                "kind": job.kind,
+                "status": job.status,
+                "completed_steps": job.completed_steps,
+                "total_steps": job.total_steps,
+                "created_at": job.created_at,
+                "finished_at": job.finished_at,
+            }
+            for job in db.list_jobs(20)
+        ],
+    }
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("diagnostics.json", json.dumps(payload, indent=2, sort_keys=True))
+        archive.writestr(
+            "README.txt",
+            "This bundle excludes API keys, cookies, URLs, file paths, lecture titles, "
+            "transcripts, notes, and downloaded course content.\n",
+        )
+    return output
+
+
 def validated_directory(
     value: str,
     label: str,
@@ -820,6 +1137,12 @@ async def index(
         if selected_course and selected_course.id
         else []
     )
+    for record in recent_processing:
+        output_file = Path(record["output_file"]) if record.get("output_file") else None
+        record["editable_note"] = record["stage"] == "ai_note" and bool(
+            db.get_note_draft(int(record["id"]))
+            or (output_file and output_file.suffix.lower() == ".md" and output_file.is_file())
+        )
     processing_groups = grouped_processing_for_display(recent_processing)
     lectures_by_topic: dict[int | None, list] = {}
     for lecture in lectures:
@@ -873,6 +1196,13 @@ async def index(
             if provider["name"] == configured_provider.name
         )
     )
+    profile_scope = f"course:{selected_course.id}" if selected_course else "global"
+    pipeline_profile = db.get_profile(profile_scope) or db.get_profile("global") or {}
+    recent_jobs = []
+    for job in db.list_jobs(12):
+        data = job.model_dump(exclude={"payload_json"})
+        data["items"] = [item.model_dump() for item in db.list_job_items(job.id)]
+        recent_jobs.append(data)
     return templates.TemplateResponse(
         request=request,
         name="index.html",
@@ -908,6 +1238,9 @@ async def index(
             "whisper_name": whisper_display_name(),
             "platform_name": platform_display_name(),
             "credential_store": credential_store_label(),
+            "prompt_templates": PROMPT_TEMPLATES,
+            "pipeline_profile": pipeline_profile,
+            "recent_jobs": recent_jobs,
             "env": {
                 "OPENAI_API_KEY": bool(__import__("os").environ.get("OPENAI_API_KEY")),
                 "ANTHROPIC_API_KEY": bool(__import__("os").environ.get("ANTHROPIC_API_KEY")),
@@ -915,6 +1248,71 @@ async def index(
             },
         },
     )
+
+
+@router.get("/system/preflight")
+async def preflight_status(
+    course: str = "",
+    settings: Settings = Depends(get_settings),
+    db: Database = Depends(get_db),
+) -> dict:
+    checks = await run_preflight_checks(settings, db, course)
+    blocking = sum(check["status"] == "failed" for check in checks)
+    warnings = sum(check["status"] == "warning" for check in checks)
+    return {"ready": blocking == 0, "blocking": blocking, "warnings": warnings, "checks": checks}
+
+
+@router.get("/system/diagnostics")
+async def download_diagnostics(
+    settings: Settings = Depends(get_settings), db: Database = Depends(get_db)
+) -> FileResponse:
+    output = create_diagnostics_bundle(settings, db)
+    return FileResponse(output, filename=output.name, media_type="application/zip")
+
+
+@router.post("/profiles/save")
+async def save_pipeline_profile(
+    scope: str = Form(default="course"),
+    course_id: str = Form(default=""),
+    course_code: str = Form(default=""),
+    download_video: bool = Form(default=False),
+    download_slides: bool = Form(default=False),
+    download_transcript: bool = Form(default=False),
+    notebooklm: bool = Form(default=False),
+    ai_notes: bool = Form(default=False),
+    save_obsidian: bool = Form(default=False),
+    whisper_fallback: bool = Form(default=False),
+    ai_note_format: str = Form(default="markdown"),
+    ai_note_length: str = Form(default="standard"),
+    prompt_template: str = Form(default="comprehensive"),
+    privacy_mode: str = Form(default="cloud_ai"),
+    conflict_policy: str = Form(default="skip"),
+    ai_provider: str = Form(default="openai"),
+    ai_model: str = Form(default=""),
+    db: Database = Depends(get_db),
+) -> RedirectResponse:
+    try:
+        profile = PipelineOptions(
+            download_video=download_video,
+            download_slides=download_slides,
+            download_transcript=download_transcript,
+            notebooklm=notebooklm,
+            ai_notes=ai_notes,
+            save_obsidian=save_obsidian,
+            whisper_fallback=whisper_fallback,
+            ai_note_format=ai_note_format,
+            ai_note_length=ai_note_length,
+            prompt_template=prompt_template,
+            privacy_mode=privacy_mode,
+            conflict_policy=conflict_policy,
+        ).model_dump()
+        profile.update({"ai_provider": ai_provider, "ai_model": ai_model})
+        profile_scope = "global" if scope == "global" else f"course:{int(course_id)}"
+        db.save_profile(profile_scope, profile, utc_now())
+    except (ValueError, TypeError) as exc:
+        return redirect_home(course=course_code, error=str(exc))
+    label = "global default" if profile_scope == "global" else "course profile"
+    return redirect_home(course=course_code, message=f"Saved {label}.")
 
 
 @router.get("/setup", response_class=HTMLResponse)
@@ -1349,6 +1747,9 @@ async def pipeline(
     ai_note_format: str = Form(default="markdown"),
     ai_note_length: str = Form(default="standard"),
     ai_custom_instructions: str = Form(default=""),
+    prompt_template: str = Form(default="comprehensive"),
+    privacy_mode: str = Form(default="cloud_ai"),
+    conflict_policy: str = Form(default="skip"),
     save_obsidian: bool = Form(default=False),
     whisper_fallback: bool = Form(default=False),
     overwrite: bool = Form(default=False),
@@ -1365,6 +1766,12 @@ async def pipeline(
     try:
         if ai_notes and not settings.ai.enabled:
             raise ValueError("AI notes are disabled. Enable them in Settings before continuing.")
+        if privacy_mode != "cloud_ai" and ai_notes:
+            raise ValueError("Cloud AI notes are unavailable in local-only or downloads-only mode.")
+        if privacy_mode == "downloads_only" and (notebooklm or download_transcript):
+            raise ValueError(
+                "Downloads-only mode cannot create transcripts or NotebookLM sources."
+            )
         provider_spec = get_ai_provider_spec(settings.ai.provider)
         selected_model = settings.ai.model
         if ai_notes:
@@ -1377,6 +1784,10 @@ async def pipeline(
         custom_instructions = ai_custom_instructions.strip()
         if len(custom_instructions) > 6000:
             raise ValueError("Custom AI instructions must be 6,000 characters or fewer.")
+        if prompt_template not in PROMPT_TEMPLATES:
+            raise ValueError("Unknown AI note template.")
+        if conflict_policy not in {"skip", "replace", "keep_both", "update_changed"}:
+            raise ValueError("Unknown existing-file policy.")
     except ValueError as exc:
         return redirect_home(error=str(exc), course=course_code)
     if ai_notes:
@@ -1395,6 +1806,9 @@ async def pipeline(
         whisper_fallback=whisper_fallback,
         overwrite=overwrite,
         skip_existing=not overwrite,
+        conflict_policy=conflict_policy,
+        prompt_template=prompt_template,
+        privacy_mode=privacy_mode,
     )
     total_steps = PipelineService.stage_count(options) * len(lecture_ids)
     job_id = str(uuid4())
@@ -1405,7 +1819,28 @@ async def pipeline(
             course_code=course_code,
             current_step="Waiting to start pipeline",
             total_steps=max(1, total_steps),
+            payload_json=json.dumps(
+                {
+                    "lecture_ids": lecture_ids,
+                    "options": options.model_dump(),
+                    "ai_provider": provider_spec.name,
+                    "ai_model": selected_model,
+                },
+                separators=(",", ":"),
+            ),
         )
+    )
+    db.create_job_items(
+        [
+            JobItemRecord(
+                job_id=job_id,
+                lecture_id=lecture_id,
+                position=position,
+                total_steps=PipelineService.stage_count(options),
+            )
+            for position, lecture_id in enumerate(lecture_ids, start=1)
+            if db.get_lecture(lecture_id) is not None
+        ]
     )
     background_tasks.add_task(run_pipeline_job, job_id, lecture_ids, options, settings, db)
     return redirect_home(course=course_code, job=job_id)
@@ -1419,6 +1854,7 @@ async def job_status(job_id: str, db: Database = Depends(get_db)) -> dict:
     payload = job.model_dump()
     payload["progress_percent"] = round(100 * job.completed_steps / max(1, job.total_steps))
     payload["eta_seconds"] = None
+    payload["items"] = [item.model_dump() for item in db.list_job_items(job_id)]
     if job.status == "running" and job.started_at and 0 < job.completed_steps < job.total_steps:
         elapsed = max(
             0.0, (datetime.now(UTC) - datetime.fromisoformat(job.started_at)).total_seconds()
@@ -1427,6 +1863,87 @@ async def job_status(job_id: str, db: Database = Depends(get_db)) -> dict:
             elapsed * (job.total_steps - job.completed_steps) / job.completed_steps
         )
     return payload
+
+
+@router.post("/jobs/{job_id}/pause")
+async def pause_job(job_id: str, db: Database = Depends(get_db)) -> dict:
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job was not found.")
+    if job.kind != "pipeline" or job.status not in {"queued", "running"}:
+        return {"status": job.status}
+    db.update_job(
+        job_id,
+        status="pausing",
+        current_step="Pausing after the current safe checkpoint",
+        updated_at=utc_now(),
+    )
+    return {"status": "pausing"}
+
+
+@router.post("/jobs/{job_id}/resume")
+async def resume_job(
+    job_id: str,
+    settings: Settings = Depends(get_settings),
+    db: Database = Depends(get_db),
+) -> dict:
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job was not found.")
+    if job.kind != "pipeline" or job.status not in {"paused", "failed", "cancelled"}:
+        return {"status": job.status}
+    payload = json.loads(job.payload_json)
+    options = PipelineOptions.model_validate(payload["options"])
+    settings.ai.provider = payload.get("ai_provider", settings.ai.provider)
+    settings.ai.model = payload.get("ai_model", settings.ai.model)
+    for item in db.list_job_items(job_id):
+        if item.status in {"paused", "failed", "running", "cancel_requested"}:
+            db.update_job_item(
+                job_id,
+                item.lecture_id,
+                status="queued",
+                current_stage="Queued to resume",
+                error_message=None,
+                updated_at=utc_now(),
+            )
+    task = asyncio.create_task(
+        run_pipeline_job(job_id, payload["lecture_ids"], options, settings, db)
+    )
+    ACTIVE_JOBS[job_id] = task
+    return {"status": "queued"}
+
+
+@router.post("/jobs/{job_id}/items/{lecture_id}/cancel")
+async def cancel_job_item(job_id: str, lecture_id: int, db: Database = Depends(get_db)) -> dict:
+    item = db.update_job_item(
+        job_id,
+        lecture_id,
+        status="cancel_requested",
+        current_stage="Will stop at the next safe checkpoint",
+        updated_at=utc_now(),
+    )
+    return item.model_dump()
+
+
+@router.post("/jobs/{job_id}/reorder")
+async def reorder_job(
+    job_id: str,
+    lecture_ids: list[int] = Form(default=[]),
+    db: Database = Depends(get_db),
+) -> dict:
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job was not found.")
+    if job.status not in {"queued", "paused"}:
+        raise HTTPException(status_code=409, detail="Pause the job before reordering it.")
+    try:
+        db.reorder_job_items(job_id, lecture_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    payload = json.loads(job.payload_json)
+    payload["lecture_ids"] = lecture_ids
+    db.update_job(job_id, payload_json=json.dumps(payload, separators=(",", ":")))
+    return {"status": job.status, "lecture_ids": lecture_ids}
 
 
 @router.post("/jobs/{job_id}/cancel")
@@ -1460,3 +1977,167 @@ async def processing_output(processing_id: int, db: Database = Depends(get_db)) 
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Output file no longer exists.")
     return FileResponse(path, filename=path.name)
+
+
+@router.get("/notes/{processing_id}", response_class=HTMLResponse)
+async def edit_note(
+    processing_id: int,
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    db: Database = Depends(get_db),
+) -> HTMLResponse:
+    record = db.get_processing(processing_id)
+    if not record or record.get("stage") != "ai_note":
+        raise HTTPException(status_code=404, detail="AI note was not found.")
+    draft = db.get_note_draft(processing_id)
+    if not draft and record.get("output_file"):
+        output = Path(record["output_file"])
+        if output.suffix.lower() == ".md" and output.is_file():
+            draft = NoteDraft(
+                processing_id=processing_id,
+                lecture_id=int(record["lecture_id"]),
+                markdown=output.read_text(encoding="utf-8", errors="replace"),
+            )
+            db.upsert_note_draft(draft)
+    if not draft:
+        raise HTTPException(
+            status_code=409,
+            detail="This older note has no editable Markdown source. Regenerate it first.",
+        )
+    lecture = db.get_lecture(draft.lecture_id)
+    if not lecture:
+        raise HTTPException(status_code=404, detail="Lecture was not found.")
+    return templates.TemplateResponse(
+        request=request,
+        name="2026-10-29-note-editor.html",
+        context={
+            "request": request,
+            "record": record,
+            "draft": draft,
+            "lecture": lecture,
+            "course": db.get_course(lecture.course_id),
+            "message": request.query_params.get("message"),
+            "error": request.query_params.get("error"),
+            "ai_enabled": settings.ai.enabled,
+        },
+    )
+
+
+@router.post("/notes/{processing_id}/save")
+async def save_note_edit(
+    processing_id: int,
+    markdown: str = Form(default=""),
+    note_format: str = Form(default="markdown"),
+    db: Database = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> RedirectResponse:
+    record = db.get_processing(processing_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="AI note was not found.")
+    if not markdown.strip():
+        return RedirectResponse(
+            f"/notes/{processing_id}?{urlencode({'error': 'Note cannot be empty.'})}",
+            status_code=303,
+        )
+    lecture = db.get_lecture(int(record["lecture_id"]))
+    if not lecture:
+        raise HTTPException(status_code=404, detail="Lecture was not found.")
+    context, _ = PipelineService(db, settings)._context_and_dir(lecture)
+    destination = expand_path("local_data/previews")
+    output = export_ai_note(
+        markdown,
+        destination,
+        context,
+        note_format,
+        overwrite=True,
+    )
+    db.upsert_note_draft(
+        NoteDraft(
+            processing_id=processing_id,
+            lecture_id=lecture.id or 0,
+            markdown=markdown,
+        )
+    )
+    db.update_processing_output(processing_id, str(output))
+    return RedirectResponse(
+        f"/notes/{processing_id}?{urlencode({'message': f'Saved {note_format.upper()} output.'})}",
+        status_code=303,
+    )
+
+
+def _replace_markdown_section(markdown: str, heading: str, replacement: str) -> str:
+    lines = markdown.splitlines()
+    target_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if line.lstrip("#").strip().casefold() == heading.strip().casefold()
+            and line.startswith("#")
+        ),
+        None,
+    )
+    if target_index is None:
+        raise ValueError("That section heading was not found in the note.")
+    level = len(lines[target_index]) - len(lines[target_index].lstrip("#"))
+    end_index = len(lines)
+    for index in range(target_index + 1, len(lines)):
+        line = lines[index]
+        if line.startswith("#"):
+            candidate_level = len(line) - len(line.lstrip("#"))
+            if candidate_level <= level:
+                end_index = index
+                break
+    new_section = [lines[target_index], "", replacement.strip(), ""]
+    return "\n".join(lines[:target_index] + new_section + lines[end_index:]).rstrip() + "\n"
+
+
+@router.post("/notes/{processing_id}/regenerate")
+async def regenerate_note_section(
+    processing_id: int,
+    section_heading: str = Form(default=""),
+    section_instructions: str = Form(default=""),
+    settings: Settings = Depends(get_settings),
+    db: Database = Depends(get_db),
+) -> RedirectResponse:
+    record = db.get_processing(processing_id)
+    draft = db.get_note_draft(processing_id)
+    if not record or not draft:
+        raise HTTPException(status_code=404, detail="Editable AI note was not found.")
+    transcript_path = Path(record.get("transcript_file") or "")
+    if not transcript_path.is_file():
+        return RedirectResponse(
+            f"/notes/{processing_id}?{urlencode({'error': 'The source transcript is unavailable.'})}",
+            status_code=303,
+        )
+    try:
+        provider = get_ai_provider(settings.ai.provider)
+        replacement = await provider.generate_note(
+            AIRequest(
+                system_prompt=STUDY_NOTE_SYSTEM_PROMPT,
+                user_prompt=(
+                    f"Rewrite only the study-note section named '{section_heading}'. "
+                    "Return the section body without its heading. Preserve transcript grounding "
+                    "and do not refer to these instructions.\n\n"
+                    f"Additional request: {section_instructions.strip() or 'Improve clarity and structure.'}"
+                    f"\n\n<TRANSCRIPT>\n{transcript_path.read_text(encoding='utf-8', errors='replace')}"
+                    "\n</TRANSCRIPT>"
+                ),
+                model=settings.ai.model,
+                temperature=settings.ai.temperature,
+                max_output_tokens=4096,
+            )
+        )
+        draft.markdown = _replace_markdown_section(
+            draft.markdown, section_heading, replacement
+        )
+        draft.updated_at = utc_now()
+        db.upsert_note_draft(draft)
+    except Exception as exc:
+        logger.exception("Could not regenerate note section")
+        return RedirectResponse(
+            f"/notes/{processing_id}?{urlencode({'error': str(exc)})}", status_code=303
+        )
+    return RedirectResponse(
+        f"/notes/{processing_id}?{urlencode({'message': f'Regenerated {section_heading}.'})}",
+        status_code=303,
+    )

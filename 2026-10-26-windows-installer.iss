@@ -1,6 +1,9 @@
 #ifndef MyAppVersion
   #define MyAppVersion "0.0.0-dev"
 #endif
+#ifndef MyAppArch
+  #define MyAppArch "x64"
+#endif
 
 #define MyAppName "Canvas Lecture AI"
 #define MyAppPublisher "Hanlin Zhang"
@@ -15,10 +18,15 @@ DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+#if MyAppArch == "arm64"
+ArchitecturesAllowed=arm64
+ArchitecturesInstallIn64BitMode=arm64
+#else
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+#endif
 OutputDir=dist
-OutputBaseFilename=Canvas-Lecture-AI-v{#MyAppVersion}-windows-x64-setup
+OutputBaseFilename=Canvas-Lecture-AI-v{#MyAppVersion}-windows-{#MyAppArch}-setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern

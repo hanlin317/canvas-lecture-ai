@@ -21,6 +21,7 @@ from app.models import (
     DownloadStatus,
     Lecture,
     LectureContext,
+    NoteDraft,
     PipelineOptions,
     ProcessingRecord,
     TranscriptMethod,
@@ -30,9 +31,17 @@ from app.obsidian.exporter import export_ai_note, obsidian_note_markdown, save_o
 from app.services.manifest import export_topic_manifest
 from app.transcripts.cleaner import clean_plain_transcript, clean_vtt
 from app.transcripts.whisper import transcribe_with_local_whisper
-from app.utils import expand_path, lecture_stem, number_for_position, sha256_text
+from app.utils import expand_path, lecture_stem, number_for_position, sha256_file, sha256_text
 
 logger = logging.getLogger(__name__)
+
+
+class JobPaused(RuntimeError):
+    pass
+
+
+class LectureCancelled(RuntimeError):
+    pass
 
 
 class PipelineService:
@@ -64,6 +73,7 @@ class PipelineService:
         total_steps: int | None = None,
         lecture_position: int = 1,
         lecture_total: int = 1,
+        control: Callable[[int], None] | None = None,
     ) -> dict:
         total = total_steps or self.stage_count(options)
         completed = start_step
@@ -71,6 +81,8 @@ class PipelineService:
 
         def begin(message: str) -> None:
             nonlocal current_message
+            if control:
+                control(lecture_id)
             current_message = message
             if progress:
                 progress(message, completed, total)
@@ -201,6 +213,7 @@ class PipelineService:
                         total_steps=total_steps,
                         lecture_position=index,
                         lecture_total=len(lecture_ids),
+                        control=None,
                     )
                 )
             except Exception as exc:
@@ -237,6 +250,41 @@ class PipelineService:
                 error_message=f"Could not access Echo360 media: {error}",
             )
         )
+
+    @staticmethod
+    def _keep_both_path(path: Path) -> Path:
+        index = 2
+        candidate = path
+        while candidate.exists():
+            candidate = path.with_name(f"{path.stem} ({index}){path.suffix}")
+            index += 1
+        return candidate
+
+    def _destination_for_policy(
+        self,
+        destination: Path,
+        options: PipelineOptions,
+        asset: Asset | None = None,
+    ) -> tuple[Path, bool]:
+        if not destination.exists():
+            return destination, False
+        policy = options.conflict_policy
+        if options.overwrite or policy == "replace":
+            return destination, True
+        if policy == "keep_both":
+            return self._keep_both_path(destination), False
+        if policy == "update_changed":
+            unchanged = bool(
+                asset
+                and asset.status == DownloadStatus.COMPLETE
+                and asset.local_path == str(destination)
+                and (
+                    (asset.checksum and asset.checksum == sha256_file(destination))
+                    or (asset.size_bytes and asset.size_bytes == destination.stat().st_size)
+                )
+            )
+            return destination, not unchanged
+        return destination, False
 
     async def _resolve_echo_assets(self, lecture: Lecture) -> ResolvedEchoAssets:
         with self.db.connect() as conn:
@@ -348,7 +396,8 @@ class PipelineService:
         asset = assets[0]
         context, _ = self._context_and_dir(lecture)
         destination = topic_dir / f"{self._output_stem(context)}.{extension}"
-        if destination.exists() and options.skip_existing and not options.overwrite:
+        destination, should_overwrite = self._destination_for_policy(destination, options, asset)
+        if destination.exists() and not should_overwrite:
             asset.local_path = str(destination)
             asset.status = DownloadStatus.COMPLETE
             self.db.upsert_asset(asset)
@@ -363,9 +412,12 @@ class PipelineService:
             return "skipped"
         try:
             status = await self.downloads.download(
-                asset.remote_url or "", destination, overwrite=options.overwrite
+                asset.remote_url or "", destination, overwrite=should_overwrite
             )
             asset.local_path = str(destination)
+            if destination.exists():
+                asset.size_bytes = destination.stat().st_size
+                asset.checksum = sha256_file(destination)
             asset.status = (
                 DownloadStatus.COMPLETE
                 if status in {"complete", "skipped"}
@@ -411,6 +463,21 @@ class PipelineService:
             )
             return "unavailable"
         destination = topic_dir / f"{self._output_stem(context)}.mp4"
+        asset = next(
+            (item for item in self.db.list_assets(lecture.id or 0) if item.kind == "video"),
+            None,
+        )
+        destination, should_overwrite = self._destination_for_policy(destination, options, asset)
+        if destination.exists() and not should_overwrite:
+            self.db.upsert_processing(
+                ProcessingRecord(
+                    lecture_id=lecture.id or 0,
+                    stage="download_video",
+                    status="skipped",
+                    output_file=str(destination),
+                )
+            )
+            return "skipped"
         try:
             status = await self.downloads.download_and_mux(
                 resolved.video_url,
@@ -418,15 +485,13 @@ class PipelineService:
                 destination,
                 video_headers=resolved.headers_by_url.get(resolved.video_url),
                 audio_headers=resolved.headers_by_url.get(resolved.audio_url),
-                overwrite=options.overwrite,
-            )
-            asset = next(
-                (item for item in self.db.list_assets(lecture.id or 0) if item.kind == "video"),
-                None,
+                overwrite=should_overwrite,
             )
             if asset:
                 asset.local_path = str(destination)
                 asset.status = DownloadStatus.COMPLETE
+                asset.size_bytes = destination.stat().st_size
+                asset.checksum = sha256_file(destination)
                 self.db.upsert_asset(asset)
             self.db.upsert_processing(
                 ProcessingRecord(
@@ -470,20 +535,33 @@ class PipelineService:
         if extension not in {"pdf", "ppt", "pptx"}:
             extension = "pdf"
         destination = topic_dir / f"{self._output_stem(context)}.{extension}"
+        asset = next(
+            (item for item in self.db.list_assets(lecture.id or 0) if item.kind == "slides"),
+            None,
+        )
+        destination, should_overwrite = self._destination_for_policy(destination, options, asset)
+        if destination.exists() and not should_overwrite:
+            self.db.upsert_processing(
+                ProcessingRecord(
+                    lecture_id=lecture.id or 0,
+                    stage="download_slides",
+                    status="skipped",
+                    output_file=str(destination),
+                )
+            )
+            return "skipped"
         try:
             status = await self.downloads.download(
                 resolved.slides_url,
                 destination,
-                overwrite=options.overwrite,
+                overwrite=should_overwrite,
                 headers=resolved.headers_by_url.get(resolved.slides_url),
-            )
-            asset = next(
-                (item for item in self.db.list_assets(lecture.id or 0) if item.kind == "slides"),
-                None,
             )
             if asset:
                 asset.local_path = str(destination)
                 asset.status = DownloadStatus.COMPLETE
+                asset.size_bytes = destination.stat().st_size
+                asset.checksum = sha256_file(destination)
                 self.db.upsert_asset(asset)
             self.db.upsert_processing(
                 ProcessingRecord(
@@ -646,9 +724,22 @@ class PipelineService:
             else self.settings.ai.custom_instructions.strip()
         )
         prompt_id = (
-            f"{self.settings.ai.prompt_version}:{note_length}:"
+            f"{self.settings.ai.prompt_version}:{options.prompt_template}:{note_length}:"
             f"{sha256_text(custom_instructions)[:10]}"
         )
+        transcript_hash = sha256_text(transcript)
+        previous = self.db.get_latest_processing(lecture.id or 0, "ai_note")
+        if (
+            previous
+            and previous["status"] == "complete"
+            and previous.get("prompt_version") == prompt_id
+            and previous.get("transcript_hash") == transcript_hash
+            and previous.get("output_file")
+            and Path(previous["output_file"]).is_file()
+            and not options.overwrite
+            and options.conflict_policy in {"skip", "update_changed"}
+        ):
+            return str(previous["output_file"])
         body = await provider.generate_note(
             AIRequest(
                 system_prompt=STUDY_NOTE_SYSTEM_PROMPT,
@@ -659,6 +750,7 @@ class PipelineService:
                     context.title,
                     transcript,
                     note_length=note_length,
+                    prompt_template=options.prompt_template,
                     custom_instructions=custom_instructions,
                 ),
                 model=self.settings.ai.model,
@@ -711,7 +803,7 @@ class PipelineService:
                     overwrite=options.overwrite,
                     filename_stem=context.title,
                 )
-        self.db.upsert_processing(
+        record = self.db.upsert_processing(
             ProcessingRecord(
                 lecture_id=lecture.id or 0,
                 stage="ai_note",
@@ -719,9 +811,17 @@ class PipelineService:
                 ai_provider=provider.name,
                 model=self.settings.ai.model,
                 prompt_version=prompt_id,
-                transcript_hash=sha256_text(transcript),
+                transcript_hash=transcript_hash,
                 transcript_file=str(transcript_path),
                 output_file=str(output),
             )
         )
+        if record.id is not None:
+            self.db.upsert_note_draft(
+                NoteDraft(
+                    processing_id=record.id,
+                    lecture_id=lecture.id or 0,
+                    markdown=note,
+                )
+            )
         return str(output)

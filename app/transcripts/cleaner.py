@@ -5,6 +5,10 @@ import re
 TIMESTAMP = re.compile(r"(\d{2}:)?\d{2}:\d{2}\.\d{3}\s+-->\s+(\d{2}:)?\d{2}:\d{2}\.\d{3}.*")
 WEBVTT_HEADER = re.compile(r"^\s*WEBVTT.*$", re.IGNORECASE)
 HTML_TAG = re.compile(r"<[^>]+>")
+LEADING_FILLER = re.compile(
+    r"^(?:(?:okay|um+|uh+|so|right|you know)[,.:;!?\s]+)+",
+    re.IGNORECASE,
+)
 
 
 def clean_vtt(vtt: str, include_timestamps: bool = False) -> str:
@@ -49,7 +53,12 @@ def dedupe_caption_fragments(lines: list[str]) -> str:
     output: list[str] = []
     previous = ""
     for line in lines:
-        if line == previous:
+        comparison = LEADING_FILLER.sub("", line).casefold()
+        previous_comparison = LEADING_FILLER.sub("", previous).casefold()
+        if comparison == previous_comparison:
+            if output and len(line) < len(output[-1]):
+                output[-1] = line
+                previous = line
             continue
         if previous and line.startswith(previous):
             output[-1] = line

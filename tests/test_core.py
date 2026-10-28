@@ -15,7 +15,7 @@ from docx import Document
 from app import config as app_config
 from app.ai import factory as ai_factory
 from app.ai.factory import AI_PROVIDER_SPECS, api_key_status, get_ai_provider, load_api_key
-from app.ai.prompts import build_study_note_prompt, note_length_tokens
+from app.ai.prompts import PROMPT_TEMPLATES, build_study_note_prompt, note_length_tokens
 from app.canvas.client import CanvasClient, _next_page_url
 from app.canvas.models import CanvasCourseSummary
 from app.config import (
@@ -25,6 +25,7 @@ from app.config import (
     save_web_settings,
 )
 from app.database import Database
+from app.downloads.manager import DownloadManager
 from app.echo360.client import (
     Echo360Client,
     ResolvedEchoAssets,
@@ -37,10 +38,13 @@ from app.models import (
     DownloadStatus,
     EchoPresentationAsset,
     EchoRecording,
+    JobItemRecord,
     JobRecord,
     Lecture,
     LectureContext,
+    NoteDraft,
     PipelineOptions,
+    ProcessingRecord,
     Topic,
 )
 from app.notebooklm.exporter import notebooklm_markdown
@@ -126,6 +130,15 @@ def test_plain_transcript_cleaning() -> None:
     assert clean_plain_transcript(" hello   world \nhello   world\n") == "hello world\n"
 
 
+def test_anonymized_transcript_fixture_removes_repeated_lines() -> None:
+    fixture = Path(__file__).parent / "fixtures" / "2026-10-29-anonymized-transcript.txt"
+    cleaned = clean_plain_transcript(fixture.read_text(encoding="utf-8"))
+
+    assert cleaned.count("periodontal maintenance") == 1
+    assert cleaned.count("The recall interval") == 1
+    assert cleaned.count("The key point") == 1
+
+
 def test_study_note_prompt_applies_length_and_custom_instructions() -> None:
     prompt = build_study_note_prompt(
         "SDDM6321",
@@ -142,6 +155,116 @@ def test_study_note_prompt_applies_length_and_custom_instructions() -> None:
     assert "Transcript evidence" in prompt
     assert note_length_tokens("concise") == 2048
     assert note_length_tokens("comprehensive") == 12288
+
+
+def test_study_note_prompt_supports_each_template() -> None:
+    for template_id, template in PROMPT_TEMPLATES.items():
+        prompt = build_study_note_prompt(
+            "SDDM6321",
+            "Periodontics",
+            "1",
+            "Maintenance",
+            "Transcript evidence",
+            prompt_template=template_id,
+        )
+        assert template["label"] in prompt
+        assert template["guidance"] in prompt
+
+
+def test_database_persists_queue_profiles_and_note_drafts(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    course = db.upsert_course(Course(canvas_id="1", code="TEST1000", name="Test"))
+    lecture = db.upsert_lecture(
+        Lecture(source_id="recording-1", course_id=course.id or 0, original_title="Lecture")
+    )
+    job = db.create_job(JobRecord(id="job-1", kind="pipeline", payload_json='{"ok":true}'))
+    db.create_job_items(
+        [JobItemRecord(job_id=job.id, lecture_id=lecture.id or 0, position=1)]
+    )
+    db.save_profile("course:1", {"privacy_mode": "local_only"}, "2026-10-29T00:00:00Z")
+    processing = db.upsert_processing(
+        ProcessingRecord(lecture_id=lecture.id or 0, stage="ai_note", status="complete")
+    )
+    draft = NoteDraft(
+        processing_id=processing.id or 0,
+        lecture_id=lecture.id or 0,
+        markdown="# Editable",
+    )
+    db.upsert_note_draft(draft)
+
+    assert db.get_job("job-1").payload_json == '{"ok":true}'
+    assert db.list_job_items("job-1")[0].lecture_id == lecture.id
+    assert db.get_profile("course:1") == {"privacy_mode": "local_only"}
+    assert db.get_note_draft(processing.id or 0).markdown == "# Editable"
+
+
+def test_database_reconciles_interrupted_pipeline_jobs(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    course = db.upsert_course(Course(canvas_id="1", code="TEST1000", name="Test"))
+    lecture = db.upsert_lecture(
+        Lecture(source_id="recording-1", course_id=course.id or 0, original_title="Lecture")
+    )
+    db.create_job(JobRecord(id="job-restart", kind="pipeline", status="running"))
+    db.create_job_items(
+        [
+            JobItemRecord(
+                job_id="job-restart",
+                lecture_id=lecture.id or 0,
+                position=1,
+                status="running",
+            )
+        ]
+    )
+
+    db.reconcile_interrupted_jobs()
+
+    assert db.get_job("job-restart").status == "paused"
+    assert db.list_job_items("job-restart")[0].status == "paused"
+
+
+@pytest.mark.asyncio
+async def test_download_resumes_an_existing_partial_file(tmp_path: Path, monkeypatch) -> None:
+    destination = tmp_path / "lecture.mp4"
+    destination.with_suffix(".mp4.part").write_bytes(b"first-")
+    requested_headers: dict[str, str] = {}
+
+    class FakeResponse:
+        status_code = 206
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self, _size: int):
+            yield b"second"
+
+    class FakeStream:
+        async def __aenter__(self):
+            return FakeResponse()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        def stream(self, _method, _url, *, headers):
+            requested_headers.update(headers)
+            return FakeStream()
+
+    monkeypatch.setattr("app.downloads.manager.httpx.AsyncClient", FakeClient)
+
+    result = await DownloadManager(retries=0).download("https://example.test/video", destination)
+
+    assert result == "complete"
+    assert requested_headers["Range"] == "bytes=6-"
+    assert destination.read_bytes() == b"first-second"
 
 
 def test_bundled_mlx_whisper_writes_local_transcript(tmp_path: Path, monkeypatch) -> None:
