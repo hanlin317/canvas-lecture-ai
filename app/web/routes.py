@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import csv
 import hashlib
+import io
 import json
 import logging
 import os
@@ -22,7 +24,7 @@ from uuid import uuid4
 import httpx
 from Crypto.Signature import eddsa
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from packaging.version import InvalidVersion, Version
 
@@ -83,6 +85,21 @@ def get_settings() -> Settings:
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def recovery_action(error: str | None) -> dict[str, str] | None:
+    message = (error or "").casefold()
+    if not message:
+        return None
+    if any(term in message for term in ("login", "session", "unauthorized", "authentication")):
+        return {"label": "Log in again", "href": "/setup?step=5"}
+    if any(term in message for term in ("launch link", "echo360", "recording")):
+        return {"label": "Rediscover lectures", "href": "/#course-discovery"}
+    if any(term in message for term in ("api key", "provider", "model")):
+        return {"label": "Check AI settings", "href": "/#settings"}
+    if "transcript" in message:
+        return {"label": "Review transcript options", "href": "/#pipeline-options"}
+    return {"label": "Run readiness checks", "href": "/#system-readiness"}
 
 
 def update_job_progress(
@@ -570,7 +587,10 @@ async def run_discovery_job(
         )
         discovered_course = result.get("course")
         display_code = discovered_course.code if discovered_course else course_code
-        message = f"Discovery finished for {display_code}: {result['recordings']} recording(s)."
+        message = (
+            f"Discovery finished for {display_code}: {result['recordings']} recording(s), "
+            f"{result.get('new_recordings', 0)} new."
+        )
         finished_at = utc_now()
         db.update_job(
             job_id,
@@ -1142,6 +1162,10 @@ async def index(
             db.get_note_draft(int(record["id"]))
             or (output_file and output_file.suffix.lower() == ".md" and output_file.is_file())
         )
+        record["editable_transcript"] = record["stage"] == "canonical_transcript" and bool(
+            output_file and output_file.is_file()
+        )
+        record["recovery"] = recovery_action(record.get("error_message"))
     processing_groups = grouped_processing_for_display(recent_processing)
     lectures_by_topic: dict[int | None, list] = {}
     for lecture in lectures:
@@ -1202,6 +1226,18 @@ async def index(
         data = job.model_dump(exclude={"payload_json"})
         data["items"] = [item.model_dump() for item in db.list_job_items(job.id)]
         recent_jobs.append(data)
+    output_library = db.list_output_library()
+    for record in output_library:
+        output_file = Path(record["output_file"]) if record.get("output_file") else None
+        record["file_exists"] = bool(output_file and output_file.is_file())
+        record["editable_note"] = record["stage"] == "ai_note" and bool(
+            db.get_note_draft(int(record["id"]))
+            or (output_file and output_file.suffix.lower() == ".md" and output_file.is_file())
+        )
+        record["editable_transcript"] = record["stage"] == "canonical_transcript" and bool(
+            output_file and output_file.is_file()
+        )
+        record["recovery"] = recovery_action(record.get("error_message"))
     return templates.TemplateResponse(
         request=request,
         name="index.html",
@@ -1240,6 +1276,13 @@ async def index(
             "prompt_templates": PROMPT_TEMPLATES,
             "pipeline_profile": pipeline_profile,
             "recent_jobs": recent_jobs,
+            "recent_activity": recent_jobs[0] if recent_jobs else None,
+            "output_library": output_library,
+            "processed_lecture_ids": {
+                int(record["lecture_id"])
+                for record in output_library
+                if record.get("status") in {"complete", "skipped"}
+            },
             "env": {
                 "OPENAI_API_KEY": bool(__import__("os").environ.get("OPENAI_API_KEY")),
                 "ANTHROPIC_API_KEY": bool(__import__("os").environ.get("ANTHROPIC_API_KEY")),
@@ -1841,6 +1884,7 @@ async def pipeline(
             if db.get_lecture(lecture_id) is not None
         ]
     )
+    db.mark_lectures_seen(lecture_ids)
     background_tasks.add_task(run_pipeline_job, job_id, lecture_ids, options, settings, db)
     return redirect_home(course=course_code, job=job_id)
 
@@ -1976,6 +2020,146 @@ async def processing_output(processing_id: int, db: Database = Depends(get_db)) 
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Output file no longer exists.")
     return FileResponse(path, filename=path.name)
+
+
+@router.post("/outputs/{processing_id}/reveal")
+async def reveal_processing_output(
+    processing_id: int, db: Database = Depends(get_db)
+) -> RedirectResponse:
+    record = db.get_processing(processing_id)
+    if not record or not record.get("output_file"):
+        raise HTTPException(status_code=404, detail="Output file was not recorded.")
+    path = Path(record["output_file"]).expanduser()
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Output file no longer exists.")
+    if sys.platform == "darwin":
+        await asyncio.create_subprocess_exec("open", "-R", str(path))
+    elif sys.platform == "win32":
+        await asyncio.create_subprocess_exec("explorer.exe", "/select,", str(path))
+    else:
+        await asyncio.create_subprocess_exec("xdg-open", str(path.parent))
+    return redirect_home(message=f"Revealed {path.name}.")
+
+
+@router.get("/transcripts/{processing_id}", response_class=HTMLResponse)
+async def edit_transcript(
+    processing_id: int,
+    request: Request,
+    db: Database = Depends(get_db),
+) -> HTMLResponse:
+    record = db.get_processing(processing_id)
+    if not record or record.get("stage") != "canonical_transcript":
+        raise HTTPException(status_code=404, detail="Transcript was not found.")
+    path = Path(record.get("output_file") or "").expanduser()
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Transcript file no longer exists.")
+    lecture = db.get_lecture(int(record["lecture_id"]))
+    if not lecture:
+        raise HTTPException(status_code=404, detail="Lecture was not found.")
+    return templates.TemplateResponse(
+        request=request,
+        name="2026-10-30-transcript-editor.html",
+        context={
+            "request": request,
+            "record": record,
+            "lecture": lecture,
+            "course": db.get_course(lecture.course_id),
+            "transcript": path.read_text(encoding="utf-8", errors="replace"),
+            "message": request.query_params.get("message"),
+            "error": request.query_params.get("error"),
+        },
+    )
+
+
+@router.post("/transcripts/{processing_id}/save")
+async def save_transcript_edit(
+    processing_id: int,
+    transcript: str = Form(default=""),
+    db: Database = Depends(get_db),
+) -> RedirectResponse:
+    record = db.get_processing(processing_id)
+    if not record or record.get("stage") != "canonical_transcript":
+        raise HTTPException(status_code=404, detail="Transcript was not found.")
+    if not transcript.strip():
+        return RedirectResponse(
+            f"/transcripts/{processing_id}?{urlencode({'error': 'Transcript cannot be empty.'})}",
+            status_code=303,
+        )
+    source = Path(record.get("output_file") or "").expanduser()
+    if not source.is_file():
+        raise HTTPException(status_code=404, detail="Transcript file no longer exists.")
+    edited = source.with_name(f"{source.stem}.edited.txt")
+    edited.write_text(transcript.strip() + "\n", encoding="utf-8")
+    db.update_processing_output(processing_id, str(edited))
+    return RedirectResponse(
+        f"/transcripts/{processing_id}?{urlencode({'message': 'Edited transcript saved; the original was preserved.'})}",
+        status_code=303,
+    )
+
+
+def _anki_rows(markdown: str) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    pending: str | None = None
+    for raw_line in markdown.splitlines():
+        line = raw_line.strip().lstrip("- ")
+        lowered = line.casefold()
+        if lowered.startswith(("q:", "question:")):
+            pending = line.split(":", 1)[1].strip().strip("*")
+        elif pending and lowered.startswith(("a:", "answer:")):
+            answer = line.split(":", 1)[1].strip().strip("*")
+            if pending and answer:
+                rows.append((pending, answer))
+            pending = None
+    return rows
+
+
+@router.get("/notes/{processing_id}/anki.csv")
+async def export_note_anki(processing_id: int, db: Database = Depends(get_db)) -> Response:
+    draft = db.get_note_draft(processing_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Editable AI note was not found.")
+    rows = _anki_rows(draft.markdown)
+    if not rows:
+        raise HTTPException(
+            status_code=409,
+            detail="No Q:/A: flashcard pairs were found. Generate the note with the Flashcards template first.",
+        )
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Front", "Back"])
+    writer.writerows(rows)
+    return Response(
+        output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="lecture-{processing_id}-anki.csv"'},
+    )
+
+
+@router.post("/study-guide")
+async def combined_study_guide(
+    lecture_ids: list[int] = Form(default=[]),
+    course_code: str = Form(default="course"),
+    db: Database = Depends(get_db),
+) -> Response:
+    sections: list[str] = []
+    for lecture_id in lecture_ids:
+        lecture = db.get_lecture(lecture_id)
+        record = db.get_latest_processing(lecture_id, "ai_note")
+        draft = db.get_note_draft(int(record["id"])) if record else None
+        if lecture and draft:
+            sections.append(f"# {lecture.display_title}\n\n{draft.markdown.strip()}")
+    if not sections:
+        raise HTTPException(
+            status_code=409,
+            detail="None of the selected lectures has an editable AI note yet.",
+        )
+    body = f"# {course_code} Combined Study Guide\n\n" + "\n\n---\n\n".join(sections) + "\n"
+    safe_code = "".join(character for character in course_code if character.isalnum() or character in "-_")
+    return Response(
+        body,
+        media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{safe_code or "course"}-study-guide.md"'},
+    )
 
 
 @router.get("/notes/{processing_id}", response_class=HTMLResponse)

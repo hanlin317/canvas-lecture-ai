@@ -61,7 +61,7 @@
     <section class="alert message wide">{{ message }}</section>
     {% endif %}
 
-    <details class="system-readiness wide">
+    <details id="system-readiness" class="system-readiness wide">
       <summary>
         <span>System readiness</span>
         <span id="preflight-summary" class="config-status">Not checked</span>
@@ -115,6 +115,21 @@
     </details>
     {% endif %}
 
+    {% if recent_activity %}
+    <section class="continue-panel wide">
+      <div>
+        <span class="section-kicker">Continue where you left off</span>
+        <strong>{{ recent_activity.course_code or 'Canvas Lecture AI' }}</strong>
+        <span>{{ recent_activity.current_step }}</span>
+      </div>
+      {% if recent_activity.kind == 'pipeline' and recent_activity.status in ['paused', 'failed', 'cancelled'] %}
+      <button type="button" class="secondary-button" data-resume-job="{{ recent_activity.id }}">Resume / retry</button>
+      {% elif recent_activity.course_code %}
+      <a class="secondary-button" href="/?course={{ recent_activity.course_code }}">Open course</a>
+      {% endif %}
+    </section>
+    {% endif %}
+
     <section class="setup-progress wide" aria-label="Setup progress">
       <div class="setup-step {{ 'done' if settings.canvas.base_url else 'current' }}">
         <strong>1</strong><span>Canvas address</span>
@@ -130,7 +145,7 @@
       </div>
     </section>
 
-    <section class="panel">
+    <section id="course-discovery" class="panel">
       <h2>Authentication</h2>
       <div class="status {{ 'ok' if canvas_session_status == 'saved' else 'warn' }}">
         Canvas session: {{ canvas_session_status }}
@@ -177,7 +192,7 @@
       </details>{% endif %}
     </section>
 
-    <details class="panel settings-panel" {% if not setup_complete %}open{% endif %}>
+    <details id="settings" class="panel settings-panel" {% if not setup_complete %}open{% endif %}>
       <summary class="settings-summary">
         <span>Settings</span>
         <span class="config-status {{ 'ok' if setup_complete else 'warn' }}">{{ 'Configured' if setup_complete else 'Setup required' }}</span>
@@ -311,6 +326,53 @@
       </div>
     </details>
 
+    <section class="panel wide output-library" aria-labelledby="output-library-title">
+      <div class="section-heading-row">
+        <div>
+          <span class="section-kicker">Your generated files</span>
+          <h2 id="output-library-title">Output Library</h2>
+        </div>
+        <span class="history-count">{{ output_library | length }} recent output{% if output_library | length != 1 %}s{% endif %}</span>
+      </div>
+      <div class="library-filters">
+        <input id="output-search" type="search" placeholder="Search course, discipline, lecture, or output" aria-label="Search outputs">
+        <select id="output-stage-filter" aria-label="Filter output type">
+          <option value="">All output types</option>
+          <option value="video">Videos</option>
+          <option value="slides">Slides</option>
+          <option value="canonical_transcript">Transcripts</option>
+          <option value="ai_note">AI notes</option>
+          <option value="notebooklm">NotebookLM</option>
+        </select>
+      </div>
+      <div id="output-library-list" class="output-library-list">
+        {% for output in output_library %}
+        <article class="output-library-row" data-stage="{{ output.stage }}" data-search="{{ output.course_code }} {{ output.topic_name }} {{ output.custom_title or output.original_title }} {{ output.stage }}">
+          <div class="output-identity">
+            <strong>{{ output.custom_title or output.original_title }}</strong>
+            <span>{{ output.course_code }} · {{ output.topic_name }} · {{ output.stage | replace('_', ' ') }}</span>
+          </div>
+          <span class="result-status {{ output.status }}">{{ output.status }}</span>
+          <div class="output-actions">
+            {% if output.file_exists %}
+            <a href="/outputs/{{ output.id }}">Open</a>
+            <form method="post" action="/outputs/{{ output.id }}/reveal"><button class="text-button">Show in folder</button></form>
+            {% if output.editable_note %}<a href="/notes/{{ output.id }}">Edit note</a>{% endif %}
+            {% if output.editable_note %}<a href="/notes/{{ output.id }}/anki.csv">Anki CSV</a>{% endif %}
+            {% if output.editable_transcript %}<a href="/transcripts/{{ output.id }}">Review transcript</a>{% endif %}
+            {% elif output.recovery %}
+            <a href="{{ output.recovery.href }}">{{ output.recovery.label }}</a>
+            {% else %}
+            <span class="result-muted">File unavailable</span>
+            {% endif %}
+          </div>
+        </article>
+        {% else %}
+        <p class="empty-state">Processed videos, slides, transcripts, and notes will appear here.</p>
+        {% endfor %}
+      </div>
+    </section>
+
     <section class="panel wide">
       <h2>Lectures{% if selected_course %} - {{ selected_course.code }}{% endif %}</h2>
       {% if processing_groups %}
@@ -330,8 +392,10 @@
             {% if result.output_file %}
             <a href="/outputs/{{ result.id }}">Open output</a>
             {% if result.editable_note %}<a href="/notes/{{ result.id }}">Edit note</a>{% endif %}
+            {% if result.editable_transcript %}<a href="/transcripts/{{ result.id }}">Review transcript</a>{% endif %}
             {% elif result.error_message %}
             <span class="result-error">{{ result.error_message }}</span>
+            {% if result.recovery %}<a href="{{ result.recovery.href }}">{{ result.recovery.label }}</a>{% endif %}
             {% else %}
             <span class="result-muted">No output file</span>
             {% endif %}
@@ -342,20 +406,29 @@
         </div>
       </details>
       {% endif %}
-      <form method="post" action="/pipeline">
+      <form id="pipeline-form" method="post" action="/pipeline">
         <input type="hidden" name="course_code" value="{{ selected_course.code if selected_course else '' }}">
         <input type="hidden" name="course_id" value="{{ selected_course.id if selected_course else '' }}">
-        <div class="pipeline-options">
+        <div id="pipeline-options" class="pipeline-options">
+        <div class="workflow-presets" aria-label="Quick workflow presets">
+          <span>Quick setup</span>
+          <button type="button" class="secondary-button" data-preset="download">Download lectures</button>
+          <button type="button" class="secondary-button" data-preset="transcript">Transcript pack</button>
+          <button type="button" class="secondary-button" data-preset="notes">Study notes</button>
+          <button type="button" class="secondary-button" data-preset="notebooklm">NotebookLM</button>
+        </div>
         <div class="pipeline-toggles">
-          <label><input type="checkbox" name="download_video" {% if pipeline_profile.get('download_video', true) %}checked{% endif %}> Video</label>
-          <label><input type="checkbox" name="download_slides" {% if pipeline_profile.get('download_slides', false) %}checked{% endif %}> Slides</label>
+          <label><input type="checkbox" name="download_video" {% if pipeline_profile.get('download_video', false) %}checked{% endif %}> Video</label>
+          <label><input type="checkbox" name="download_slides" {% if pipeline_profile.get('download_slides', true) %}checked{% endif %}> Slides</label>
           <label><input type="checkbox" name="download_transcript" {% if pipeline_profile.get('download_transcript', true) %}checked{% endif %}> Transcript</label>
           <label title="Runs locally. The model downloads once when first needed."><input type="checkbox" name="whisper_fallback" {% if pipeline_profile.get('whisper_fallback', settings.transcripts.whisper_enabled) %}checked{% endif %}> Local transcript fallback</label>
-          <label><input type="checkbox" name="notebooklm" {% if pipeline_profile.get('notebooklm', true) %}checked{% endif %}> NotebookLM</label>
+          <label><input type="checkbox" name="notebooklm" {% if pipeline_profile.get('notebooklm', false) %}checked{% endif %}> NotebookLM</label>
           <label title="{{ 'Generate AI study notes' if settings.ai.enabled else 'Enable AI notes in Settings first' }}"><input id="ai-notes" type="checkbox" name="ai_notes"{% if not settings.ai.enabled %} disabled{% endif %}{% if pipeline_profile.get('ai_notes', false) %} checked{% endif %}> AI notes{% if not settings.ai.enabled %} (disabled){% endif %}</label>
           <label><input type="checkbox" name="save_obsidian" {% if pipeline_profile.get('save_obsidian', false) %}checked{% endif %}> Save to Obsidian</label>
           <label><input type="checkbox" name="overwrite"> Overwrite</label>
         </div>
+        <details class="advanced-run-options">
+        <summary>Advanced output and AI options</summary>
         <div class="pipeline-ai-controls">
           <label class="pipeline-field" for="ai-note-format"><span>Note format</span>
           <select id="ai-note-format" name="ai_note_format" disabled>
@@ -389,14 +462,13 @@
             {% endfor %}
           </select>
           </label>
-          <button data-job-submit>Run Pipeline</button>
         </div>
         </div>
         <div class="pipeline-policy-controls">
           <label class="pipeline-field" for="privacy-mode"><span>Privacy mode</span>
             <select id="privacy-mode" name="privacy_mode">
-              <option value="cloud_ai" {% if pipeline_profile.get('privacy_mode', 'cloud_ai') == 'cloud_ai' %}selected{% endif %}>Cloud AI allowed</option>
-              <option value="local_only" {% if pipeline_profile.get('privacy_mode') == 'local_only' %}selected{% endif %}>Local processing only</option>
+              <option value="cloud_ai" {% if pipeline_profile.get('privacy_mode') == 'cloud_ai' %}selected{% endif %}>Cloud AI allowed</option>
+              <option value="local_only" {% if pipeline_profile.get('privacy_mode', 'local_only') == 'local_only' %}selected{% endif %}>Local processing only</option>
               <option value="downloads_only" {% if pipeline_profile.get('privacy_mode') == 'downloads_only' %}selected{% endif %}>Downloads only</option>
             </select>
           </label>
@@ -427,6 +499,13 @@
           <textarea id="ai-custom-instructions" name="ai_custom_instructions" rows="5" maxlength="6000" disabled placeholder="Optional: emphasize specific concepts, change the organization, or request a study style.">{{ settings.ai.custom_instructions }}</textarea>
           <button type="button" class="secondary-button" data-reset-prompt="ai-custom-instructions">Reset to recommended</button>
         </details>
+        </details>
+        <div class="run-actions">
+          <button type="button" data-review-run>Review and run</button>
+          <button type="button" class="secondary-button" data-select-new>Select new lectures</button>
+          <button type="button" class="secondary-button" data-toggle-processed>Hide processed</button>
+          <label class="notification-toggle"><input id="completion-notifications" type="checkbox"> Notify me when finished</label>
+        </div>
         <div class="notebooklm-handoff">
           <a class="button-link" href="https://notebooklm.google.com/" target="_blank" rel="noreferrer">Open NotebookLM</a>
           <button type="submit" class="secondary-button" formaction="/notebooklm/reveal" formmethod="post" formnovalidate>Show source files</button>
@@ -447,10 +526,10 @@
               </thead>
               <tbody>
                 {% for lecture in group.lectures %}
-                <tr>
+                <tr data-new="{{ 'true' if lecture.is_new else 'false' }}" data-processed="{{ 'true' if lecture.id in processed_lecture_ids else 'false' }}" data-duration="{{ lecture.duration_seconds or 0 }}">
                   <td><input type="checkbox" name="lecture_ids" value="{{ lecture.id }}"></td>
                   <td>{{ lecture.lecture_number or '' }}</td>
-                  <td>{{ lecture.custom_title or lecture.original_title }}</td>
+                  <td>{{ lecture.custom_title or lecture.original_title }}{% if lecture.is_new %} <span class="new-badge">New</span>{% endif %}</td>
                   <td>{{ lecture.date | lecture_date }}</td>
                   <td>{% if lecture.recording_url %}<a href="{{ lecture.recording_url }}">open</a>{% endif %}</td>
                 </tr>
@@ -462,12 +541,39 @@
           <p class="empty-state">No lectures discovered yet for the selected course.</p>
           {% endfor %}
         </div>
+        <div class="study-guide-action">
+          <button type="submit" class="secondary-button" formaction="/study-guide" formmethod="post">Download combined study guide</button>
+          <span>Uses existing editable AI notes for the selected lectures.</span>
+        </div>
+        <dialog id="run-summary-dialog" class="run-summary-dialog">
+          <h2>Ready to process?</h2>
+          <div id="run-summary-content"></div>
+          <div class="dialog-actions">
+            <button type="button" class="secondary-button" data-close-summary>Go back</button>
+            <button type="submit" data-job-submit>Start job</button>
+          </div>
+        </dialog>
       </form>
     </section>
   </main>
   <script>
     const providerModels = {{ ai_provider_models | tojson }};
     const providerRefreshTimes = {{ ai_provider_refresh | tojson }};
+    const pipelineForm = document.getElementById('pipeline-form');
+
+    const outputSearch = document.getElementById('output-search');
+    const outputStageFilter = document.getElementById('output-stage-filter');
+    function filterOutputs() {
+      const query = (outputSearch?.value || '').trim().toLowerCase();
+      const stage = outputStageFilter?.value || '';
+      document.querySelectorAll('.output-library-row').forEach((row) => {
+        const matchesQuery = !query || row.dataset.search.toLowerCase().includes(query);
+        const matchesStage = !stage || row.dataset.stage === stage;
+        row.hidden = !(matchesQuery && matchesStage);
+      });
+    }
+    outputSearch?.addEventListener('input', filterOutputs);
+    outputStageFilter?.addEventListener('change', filterOutputs);
 
     function connectProviderModel(providerId, modelId) {
       const provider = document.getElementById(providerId);
@@ -553,6 +659,34 @@
     privacyMode.addEventListener('change', updatePrivacyMode);
     updatePrivacyMode();
 
+    const presetControls = {
+      video: pipelineForm?.querySelector('input[name="download_video"]'),
+      slides: pipelineForm?.querySelector('input[name="download_slides"]'),
+      transcript: pipelineForm?.querySelector('input[name="download_transcript"]'),
+      whisper: pipelineForm?.querySelector('input[name="whisper_fallback"]'),
+      notebooklm: pipelineForm?.querySelector('input[name="notebooklm"]'),
+      ai: aiNotesToggle,
+      obsidian: pipelineForm?.querySelector('input[name="save_obsidian"]'),
+    };
+    const presets = {
+      download: { video: true, slides: true, transcript: false, whisper: false, notebooklm: false, ai: false, obsidian: false, privacy: 'downloads_only' },
+      transcript: { video: false, slides: true, transcript: true, whisper: true, notebooklm: false, ai: false, obsidian: false, privacy: 'local_only' },
+      notes: { video: false, slides: true, transcript: true, whisper: true, notebooklm: false, ai: true, obsidian: false, privacy: 'cloud_ai' },
+      notebooklm: { video: false, slides: true, transcript: true, whisper: true, notebooklm: true, ai: false, obsidian: false, privacy: 'local_only' },
+    };
+    document.querySelectorAll('[data-preset]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const preset = presets[button.dataset.preset];
+        Object.entries(presetControls).forEach(([key, control]) => {
+          if (control && key in preset) control.checked = preset[key];
+        });
+        privacyMode.value = preset.privacy;
+        updatePrivacyMode();
+        document.querySelectorAll('[data-preset]').forEach((item) => item.classList.remove('active'));
+        button.classList.add('active');
+      });
+    });
+
     document.querySelectorAll('[data-reset-prompt]').forEach((button) => {
       button.addEventListener('click', () => {
         const target = document.getElementById(button.dataset.resetPrompt);
@@ -584,6 +718,68 @@
       });
       updateTopicSelectButton(folder);
     });
+
+    document.querySelector('[data-select-new]')?.addEventListener('click', () => {
+      document.querySelectorAll('tr[data-new="true"] input[name="lecture_ids"]').forEach((box) => {
+        box.checked = true;
+      });
+      document.querySelectorAll('.lecture-folder').forEach(updateTopicSelectButton);
+    });
+    document.querySelector('[data-toggle-processed]')?.addEventListener('click', (event) => {
+      const hide = event.currentTarget.dataset.hidden !== 'true';
+      event.currentTarget.dataset.hidden = String(hide);
+      event.currentTarget.textContent = hide ? 'Show processed' : 'Hide processed';
+      document.querySelectorAll('tr[data-processed="true"]').forEach((row) => { row.hidden = hide; });
+    });
+
+    const notificationToggle = document.getElementById('completion-notifications');
+    if (notificationToggle) {
+      notificationToggle.checked = localStorage.getItem('canvasLectureNotifications') === 'true';
+      notificationToggle.addEventListener('change', async () => {
+        if (notificationToggle.checked && 'Notification' in window && Notification.permission === 'default') {
+          const permission = await Notification.requestPermission();
+          notificationToggle.checked = permission === 'granted';
+        }
+        localStorage.setItem('canvasLectureNotifications', String(notificationToggle.checked));
+      });
+    }
+    function notifyCompletion(title, body) {
+      if (notificationToggle?.checked && 'Notification' in window && Notification.permission === 'granted') {
+        new Notification(title, { body });
+      }
+    }
+
+    const runSummaryDialog = document.getElementById('run-summary-dialog');
+    const runSummaryContent = document.getElementById('run-summary-content');
+    document.querySelector('[data-review-run]')?.addEventListener('click', () => {
+      const selectedRows = [...pipelineForm.querySelectorAll('input[name="lecture_ids"]:checked')]
+        .map((checkbox) => checkbox.closest('tr'));
+      if (!selectedRows.length) {
+        window.alert('Select at least one lecture first.');
+        return;
+      }
+      const outputs = [...pipelineForm.querySelectorAll('.pipeline-toggles input:checked')]
+        .map((input) => input.parentElement.textContent.trim());
+      const seconds = selectedRows.reduce((total, row) => total + Number(row.dataset.duration || 0), 0);
+      const hours = seconds / 3600;
+      const videoSelected = presetControls.video.checked;
+      const estimatedSize = videoSelected && hours
+        ? `${Math.max(1, Math.round(hours * 300))}-${Math.max(2, Math.round(hours * 700))} MB estimated video download`
+        : 'No large video download selected';
+      const aiDetail = aiNotesToggle.checked
+        ? `${pipelineAiProvider.selectedOptions[0]?.textContent || 'AI'} · ${pipelineAiModel.selectedOptions[0]?.textContent || ''} · provider usage may be billed`
+        : 'No transcript content will be sent to an AI provider';
+      runSummaryContent.innerHTML = `
+        <dl class="run-summary-list">
+          <div><dt>Lectures</dt><dd>${selectedRows.length}</dd></div>
+          <div><dt>Outputs</dt><dd>${outputs.join(', ') || 'None selected'}</dd></div>
+          <div><dt>Download</dt><dd>${estimatedSize}</dd></div>
+          <div><dt>Privacy</dt><dd>${privacyMode.selectedOptions[0].textContent}</dd></div>
+          <div><dt>AI</dt><dd>${aiDetail}</dd></div>
+        </dl>`;
+      runSummaryDialog.showModal();
+    });
+    document.querySelector('[data-close-summary]')?.addEventListener('click', () => runSummaryDialog.close());
 
     document.querySelectorAll('[data-folder-field]').forEach((button) => {
       button.addEventListener('click', async () => {
@@ -729,6 +925,7 @@
           return;
         } else if (job.status === 'completed') {
           progressEta.textContent = 'Finished';
+          notifyCompletion('Canvas Lecture AI finished', job.message || 'Your lecture outputs are ready.');
           window.setTimeout(() => {
             const query = new URLSearchParams({ course: job.course_code || '', message: job.message || 'Task complete.' });
             window.location.replace(`/?${query.toString()}`);
@@ -736,6 +933,7 @@
           return;
         } else if (job.status === 'failed') {
           progressEta.textContent = 'Stopped';
+          notifyCompletion('Canvas Lecture AI needs attention', job.error_message || 'A lecture job failed.');
           window.setTimeout(() => {
             const query = new URLSearchParams({ course: job.course_code || '', error: job.error_message || 'Task failed.' });
             window.location.replace(`/?${query.toString()}`);
@@ -792,6 +990,12 @@
           if (!response.ok) window.location.reload();
         });
       });
+    });
+
+    document.querySelector('[data-resume-job]')?.addEventListener('click', async (event) => {
+      const jobId = event.currentTarget.dataset.resumeJob;
+      const response = await fetch(`/jobs/${encodeURIComponent(jobId)}/resume`, { method: 'POST' });
+      if (response.ok) window.location.assign(`/?job=${encodeURIComponent(jobId)}`);
     });
 
     const preflightButton = document.getElementById('run-preflight');

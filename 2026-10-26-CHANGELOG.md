@@ -6,6 +6,28 @@ immutable.
 
 ## [Unreleased]
 
+### Added
+
+- Quick workflow presets for downloads, transcript packs, AI study notes, and NotebookLM.
+- A searchable Output Library with file actions, transcript review, Anki CSV export, and combined
+  study-guide generation.
+- A pre-run review with selected lecture count, requested outputs, rough download size, privacy
+  mode, and AI disclosure.
+- New-lecture tracking, per-discipline selection, and controls for selecting only newly discovered
+  recordings or hiding processed recordings.
+- Browser completion notifications, recent activity, contextual recovery actions, and a protected
+  transcript editor that preserves the original transcript.
+- A practice-question note template with a separate answer key.
+
+### Changed
+
+- Made download-oriented, local-processing defaults safer and moved advanced output and AI options
+  into a collapsible section.
+- Reorganized the README around installation, first-run setup, common workflows, output locations,
+  privacy, recovery, updates, and troubleshooting.
+- Limited dashboard retry controls to resumable pipeline work so failed discovery jobs return users
+  to the relevant course instead.
+
 ## [0.6.0] - 2026-10-29
 
 ### Added

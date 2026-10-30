@@ -54,7 +54,9 @@ CREATE TABLE IF NOT EXISTS lectures (
   recording_url TEXT,
   date TEXT,
   duration_seconds INTEGER,
-  position INTEGER DEFAULT 0
+  position INTEGER DEFAULT 0,
+  is_new INTEGER NOT NULL DEFAULT 1,
+  discovered_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS assets (
@@ -180,6 +182,11 @@ class Database:
             job_columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
             if "payload_json" not in job_columns:
                 conn.execute("ALTER TABLE jobs ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'")
+            lecture_columns = {row[1] for row in conn.execute("PRAGMA table_info(lectures)")}
+            if "is_new" not in lecture_columns:
+                conn.execute("ALTER TABLE lectures ADD COLUMN is_new INTEGER NOT NULL DEFAULT 0")
+            if "discovered_at" not in lecture_columns:
+                conn.execute("ALTER TABLE lectures ADD COLUMN discovered_at TEXT")
 
     def reconcile_interrupted_jobs(self) -> None:
         with self.connect() as conn:
@@ -342,8 +349,9 @@ class Database:
             conn.execute(
                 """
                 INSERT INTO lectures(source_id, course_id, topic_id, original_title, custom_title,
-                  lecture_number, recording_url, date, duration_seconds, position)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  lecture_number, recording_url, date, duration_seconds, position, is_new,
+                  discovered_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_id) DO UPDATE SET
                   course_id=excluded.course_id,
                   topic_id=excluded.topic_id,
@@ -366,6 +374,8 @@ class Database:
                     lecture.date,
                     lecture.duration_seconds,
                     lecture.position,
+                    lecture.is_new,
+                    lecture.discovered_at,
                 ),
             )
             row = conn.execute(
@@ -388,6 +398,42 @@ class Database:
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM lectures WHERE id = ?", (lecture_id,)).fetchone()
             return Lecture(**dict(row)) if row else None
+
+    def lecture_source_ids(self, course_id: int) -> set[str]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT source_id FROM lectures WHERE course_id = ?", (course_id,)
+            ).fetchall()
+            return {str(row["source_id"]) for row in rows}
+
+    def mark_lectures_seen(self, lecture_ids: list[int]) -> None:
+        if not lecture_ids:
+            return
+        placeholders = ",".join("?" for _ in lecture_ids)
+        with self.connect() as conn:
+            conn.execute(
+                f"UPDATE lectures SET is_new = 0 WHERE id IN ({placeholders})",
+                lecture_ids,
+            )
+
+    def list_output_library(self, limit: int = 250) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT p.*, l.original_title, l.custom_title, l.lecture_number,
+                       c.code AS course_code, c.name AS course_name,
+                       COALESCE(t.name, 'Lectures') AS topic_name
+                FROM processing p
+                JOIN lectures l ON l.id = p.lecture_id
+                JOIN courses c ON c.id = l.course_id
+                LEFT JOIN topics t ON t.id = l.topic_id
+                WHERE p.output_file IS NOT NULL OR p.error_message IS NOT NULL
+                ORDER BY p.updated_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     def list_recent_processing(self, course_id: int, limit: int = 30) -> list[dict[str, Any]]:
         with self.connect() as conn:

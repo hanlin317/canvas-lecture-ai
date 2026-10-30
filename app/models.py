@@ -59,6 +59,8 @@ class Lecture(BaseModel):
     date: str | None = None
     duration_seconds: int | None = None
     position: int = 0
+    is_new: bool = True
+    discovered_at: str | None = None
 
     @property
     def display_title(self) -> str:
@@ -185,6 +187,7 @@ class PipelineOptions(BaseModel):
         "flashcards",
         "learning_objectives",
         "concise_summary",
+        "practice_questions",
     ] = "comprehensive"
     privacy_mode: Literal["downloads_only", "local_only", "cloud_ai"] = "cloud_ai"
 
