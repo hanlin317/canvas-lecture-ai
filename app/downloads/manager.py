@@ -18,10 +18,12 @@ def ffmpeg_executable() -> str:
         return configured
     bundle_root = getattr(sys, "_MEIPASS", None)
     if bundle_root:
-        executable_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
-        bundled = Path(bundle_root) / "ffmpeg" / executable_name
-        if bundled.is_file():
-            return str(bundled)
+        ffmpeg_dir = Path(bundle_root) / "ffmpeg"
+        executable_names = ("ffmpeg*.exe",) if sys.platform == "win32" else ("ffmpeg",)
+        for executable_name in executable_names:
+            bundled = next(ffmpeg_dir.glob(executable_name), None)
+            if bundled and bundled.is_file():
+                return str(bundled)
     system = shutil.which("ffmpeg")
     if system:
         return system

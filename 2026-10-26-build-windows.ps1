@@ -44,7 +44,7 @@ $env:PLAYWRIGHT_BROWSERS_PATH = $BrowserDir
 & $VenvPython -m playwright install chromium
 Assert-LastExitCode "Installing Playwright Chromium"
 
-$PlaywrightFfmpeg = Get-ChildItem $BrowserDir -Filter ffmpeg.exe -File -Recurse |
+$PlaywrightFfmpeg = Get-ChildItem $BrowserDir -Filter "ffmpeg*.exe" -File -Recurse |
     Select-Object -First 1
 if (-not $PlaywrightFfmpeg) {
     throw "Playwright's FFmpeg helper was not found under $BrowserDir."
