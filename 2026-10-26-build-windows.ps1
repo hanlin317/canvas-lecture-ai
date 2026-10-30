@@ -13,6 +13,10 @@ $Version = & $Python -c "import pathlib,tomllib; print(tomllib.loads(pathlib.Pat
 $Machine = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
 $Arch = if ($Machine -eq "Arm64") { "arm64" } else { "x64" }
 
+function Assert-LastExitCode([string]$Step) {
+    if ($LASTEXITCODE -ne 0) { throw "$Step failed with exit code $LASTEXITCODE." }
+}
+
 if (Test-Path $AppDir) {
     throw "$AppDir already exists. Move it aside before building so an earlier build is not overwritten."
 }
@@ -20,25 +24,39 @@ if (Test-Path $AppDir) {
 New-Item -ItemType Directory -Force -Path (Join-Path $Root "build"), $DistDir | Out-Null
 if (-not (Test-Path (Join-Path $BuildVenv "Scripts\python.exe"))) {
     & $Python -m venv $BuildVenv
+    Assert-LastExitCode "Creating the packaging environment"
 }
 $VenvPython = Join-Path $BuildVenv "Scripts\python.exe"
 $PyInstaller = Join-Path $BuildVenv "Scripts\pyinstaller.exe"
 
 & $VenvPython -m pip install --upgrade pip
+Assert-LastExitCode "Upgrading pip"
 if ($Arch -eq "arm64") {
     & $VenvPython -m pip install -e "."
+    Assert-LastExitCode "Installing ARM64 application dependencies"
     & $VenvPython -m pip install "pyinstaller>=6.16"
+    Assert-LastExitCode "Installing PyInstaller"
 } else {
     & $VenvPython -m pip install -e ".[ai,dev]"
+    Assert-LastExitCode "Installing application dependencies"
 }
 $env:PLAYWRIGHT_BROWSERS_PATH = $BrowserDir
 & $VenvPython -m playwright install chromium
+Assert-LastExitCode "Installing Playwright Chromium"
+
+$PlaywrightFfmpeg = Get-ChildItem $BrowserDir -Filter ffmpeg.exe -File -Recurse |
+    Select-Object -First 1
+if (-not $PlaywrightFfmpeg) {
+    throw "Playwright's FFmpeg helper was not found under $BrowserDir."
+}
+$env:IMAGEIO_FFMPEG_EXE = $PlaywrightFfmpeg.FullName
 
 & $PyInstaller `
     --noconfirm `
     --distpath $DistDir `
     --workpath $WorkDir `
     (Join-Path $Root "2026-10-26-windows.spec")
+Assert-LastExitCode "Packaging Canvas Lecture AI"
 
 function Invoke-SignTool([string]$Path) {
     if (-not $env:WINDOWS_SIGNING_CERTIFICATE_PFX) { return }
@@ -70,6 +88,7 @@ if (-not $Iscc) {
 }
 
 & $Iscc "/DMyAppVersion=$Version" "/DMyAppArch=$Arch" (Join-Path $Root "2026-10-26-windows-installer.iss")
+Assert-LastExitCode "Building the Windows installer"
 $Installer = Join-Path $DistDir "Canvas-Lecture-AI-v$Version-windows-$Arch-setup.exe"
 Invoke-SignTool $Installer
 $Hash = (Get-FileHash -Algorithm SHA256 $Installer).Hash.ToLowerInvariant()

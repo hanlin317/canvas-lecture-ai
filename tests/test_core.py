@@ -27,7 +27,7 @@ from app.config import (
     save_web_settings,
 )
 from app.database import Database
-from app.downloads.manager import DownloadManager
+from app.downloads.manager import DownloadManager, ffmpeg_executable
 from app.echo360.client import (
     Echo360Client,
     ResolvedEchoAssets,
@@ -80,6 +80,18 @@ def test_lecture_stem_uses_course_topic_local_number_and_title() -> None:
         lecture_stem("SDDM6321", "Periodontics", "1", "Periodontal Maintenance")
         == "SDDM6321 Periodontics 1 Periodontal Maintenance"
     )
+
+
+def test_ffmpeg_executable_finds_packaged_windows_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = tmp_path / "ffmpeg" / "ffmpeg.exe"
+    helper.parent.mkdir()
+    helper.write_bytes(b"packaged ffmpeg")
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    assert ffmpeg_executable() == str(helper)
 
 
 def test_canvas_course_code_normalization() -> None:

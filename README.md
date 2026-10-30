@@ -71,7 +71,8 @@ the right-click **Open** flow described above.
 3. Open **Canvas Lecture AI** from the Start menu.
 
 The x64 package supports 64-bit Windows 10 and Windows 11. The ARM64 package
-supports Windows 11 ARM. An unsigned build
+supports Windows 11 ARM and runs its bundled x64 Chromium and FFmpeg helpers
+through Windows emulation. An unsigned build
 may show a Microsoft Defender SmartScreen warning until the project has a
 Windows code-signing certificate. Choose **More info**, verify that the download
 came from this repository, and select **Run anyway**.
