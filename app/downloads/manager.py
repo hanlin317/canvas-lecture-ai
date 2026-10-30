@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import httpx
@@ -15,6 +16,12 @@ def ffmpeg_executable() -> str:
     configured = os.environ.get("DLM_FFMPEG")
     if configured and Path(configured).is_file():
         return configured
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        executable_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+        bundled = Path(bundle_root) / "ffmpeg" / executable_name
+        if bundled.is_file():
+            return str(bundled)
     system = shutil.which("ffmpeg")
     if system:
         return system

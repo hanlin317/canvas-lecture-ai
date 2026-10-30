@@ -1,6 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import importlib.util
+import os
+import platform
 from pathlib import Path
 
 from imageio_ffmpeg import get_ffmpeg_exe
@@ -35,7 +37,15 @@ datas += collect_data_files("docx")
 datas += collect_data_files("reportlab", includes=["fonts/*.ttf"])
 datas += faster_datas + ctranslate_datas
 
-binaries = [(get_ffmpeg_exe(), "ffmpeg")]
+ffmpeg_path = os.environ.get("IMAGEIO_FFMPEG_EXE") or get_ffmpeg_exe()
+is_windows_arm = platform.machine().lower() in {"arm64", "aarch64"}
+if is_windows_arm:
+    # PyInstaller validates binary architecture. Windows 11 runs this x64 helper
+    # through emulation, so bundle it as data for the native ARM application.
+    datas.append((ffmpeg_path, "ffmpeg"))
+    binaries = []
+else:
+    binaries = [(ffmpeg_path, "ffmpeg")]
 binaries += faster_binaries + ctranslate_binaries
 
 hiddenimports = (
