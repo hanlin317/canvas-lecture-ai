@@ -14,7 +14,9 @@ from docx import Document
 
 from app import config as app_config
 from app.ai import factory as ai_factory
+from app.ai.base import AIRequest
 from app.ai.factory import AI_PROVIDER_SPECS, api_key_status, get_ai_provider, load_api_key
+from app.ai.openai_provider import OpenAIProvider
 from app.ai.prompts import PROMPT_TEMPLATES, build_study_note_prompt, note_length_tokens
 from app.canvas.client import CanvasClient, _next_page_url
 from app.canvas.models import CanvasCourseSummary
@@ -169,6 +171,47 @@ def test_study_note_prompt_supports_each_template() -> None:
         )
         assert template["label"] in prompt
         assert template["guidance"] in prompt
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_uses_direct_chat_completions_request(monkeypatch) -> None:
+    captured: dict = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"choices": [{"message": {"content": "Generated note"}}]}
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, *, headers, json):
+            captured.update(url=url, headers=headers, json=json)
+            return FakeResponse()
+
+    monkeypatch.setattr("app.ai.openai_provider.httpx.AsyncClient", FakeClient)
+    result = await OpenAIProvider("test-key").generate_note(
+        AIRequest(
+            model="gpt-test",
+            system_prompt="System",
+            user_prompt="User",
+            max_output_tokens=1234,
+        )
+    )
+
+    assert result == "Generated note"
+    assert captured["url"] == "https://api.openai.com/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer test-key"
+    assert captured["json"]["max_completion_tokens"] == 1234
 
 
 def test_database_persists_queue_profiles_and_note_drafts(tmp_path: Path) -> None:

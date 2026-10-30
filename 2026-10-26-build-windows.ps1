@@ -25,7 +25,12 @@ $VenvPython = Join-Path $BuildVenv "Scripts\python.exe"
 $PyInstaller = Join-Path $BuildVenv "Scripts\pyinstaller.exe"
 
 & $VenvPython -m pip install --upgrade pip
-& $VenvPython -m pip install -e ".[ai,dev]"
+if ($Arch -eq "arm64") {
+    & $VenvPython -m pip install -e "."
+    & $VenvPython -m pip install "pyinstaller>=6.16"
+} else {
+    & $VenvPython -m pip install -e ".[ai,dev]"
+}
 $env:PLAYWRIGHT_BROWSERS_PATH = $BrowserDir
 & $VenvPython -m playwright install chromium
 
