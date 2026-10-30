@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 from app.ai.base import AIRequest
@@ -128,12 +129,16 @@ class DiscoveryService:
             Topic(course_id=course.id or 0, name="Lectures", numbering_prefix="")
         )
         report("Saving discovered recordings", 5)
+        existing_source_ids = self.db.lecture_source_ids(course.id or 0)
+        new_recordings = 0
         topic_lecture_counts: dict[int, int] = {}
         for recording in recordings:
             topic = topics.get(recording.topic_hint or "") or default_topic
             topic_id = topic.id or 0
             topic_lecture_counts[topic_id] = topic_lecture_counts.get(topic_id, 0) + 1
             topic_lecture_number = topic_lecture_counts[topic_id]
+            is_new = recording.source_id not in existing_source_ids
+            new_recordings += int(is_new)
             lecture = self.db.upsert_lecture(
                 Lecture(
                     source_id=recording.source_id,
@@ -145,6 +150,8 @@ class DiscoveryService:
                     date=recording.date,
                     duration_seconds=recording.duration_seconds,
                     position=topic_lecture_number,
+                    is_new=is_new,
+                    discovered_at=datetime.now(UTC).isoformat(),
                 )
             )
             for video in recording.videos:
@@ -180,7 +187,12 @@ class DiscoveryService:
                     )
                 )
         report("Discovery complete", 6)
-        return {"course": course, "echo_links": echo_links, "recordings": len(recordings)}
+        return {
+            "course": course,
+            "echo_links": echo_links,
+            "recordings": len(recordings),
+            "new_recordings": new_recordings,
+        }
 
 
 def _infer_prefix(name: str) -> str:

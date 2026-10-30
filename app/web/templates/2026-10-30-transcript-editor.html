@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Review {{ lecture.display_title }} transcript - Canvas Lecture AI</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20261030-1">
+</head>
+<body>
+  <header class="editor-header">
+    <div>
+      <a class="header-link" href="/?course={{ course.code if course else '' }}">Back to lectures</a>
+      <h1>{{ lecture.display_title }}</h1>
+      <p>{{ course.code if course else '' }} · Transcript review</p>
+    </div>
+  </header>
+
+  <main class="note-editor-main">
+    {% if error %}<section class="alert error wide">{{ error }}</section>{% endif %}
+    {% if message %}<section class="alert message wide">{{ message }}</section>{% endif %}
+    <section class="transcript-review-note">
+      <strong>Review before generating notes</strong>
+      <span>Correct names, terminology, and speech-recognition errors. Saving creates an edited copy and preserves the original transcript.</span>
+    </section>
+    <form method="post" action="/transcripts/{{ record.id }}/save" class="transcript-editor-form">
+      <label for="transcript-text">Lecture transcript</label>
+      <textarea id="transcript-text" name="transcript" spellcheck="true">{{ transcript }}</textarea>
+      <div class="editor-actions">
+        <button type="submit">Save edited transcript</button>
+        <a class="secondary-button" href="/outputs/{{ record.id }}">Open current transcript</a>
+      </div>
+    </form>
+  </main>
+</body>
+</html>

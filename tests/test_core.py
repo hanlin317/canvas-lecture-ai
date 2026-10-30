@@ -82,6 +82,26 @@ def test_lecture_stem_uses_course_topic_local_number_and_title() -> None:
     )
 
 
+def test_database_tracks_and_clears_new_lectures(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    course = db.upsert_course(Course(canvas_id="1", code="DENT1000", name="Dental"))
+    lecture = db.upsert_lecture(
+        Lecture(
+            source_id="new-recording",
+            course_id=course.id or 0,
+            original_title="New lecture",
+            discovered_at="2026-10-30T00:00:00+00:00",
+        )
+    )
+
+    assert lecture.is_new is True
+    assert db.lecture_source_ids(course.id or 0) == {"new-recording"}
+
+    db.mark_lectures_seen([lecture.id or 0])
+
+    assert db.get_lecture(lecture.id or 0).is_new is False
+
+
 def test_ffmpeg_executable_finds_packaged_windows_helper(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -40,6 +40,13 @@ PROMPT_TEMPLATES = {
             "important numbers, and a short take-home checklist."
         ),
     },
+    "practice_questions": {
+        "label": "Practice questions",
+        "guidance": (
+            "Create short-answer, clinical reasoning, and single-best-answer questions. Put all "
+            "answers in a separate answer-key section so the questions can be attempted first."
+        ),
+    },
 }
 
 NOTE_LENGTHS = {

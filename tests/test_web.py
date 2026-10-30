@@ -1031,8 +1031,94 @@ def test_recent_pipeline_output_is_visible_and_downloadable(tmp_path, monkeypatc
     downloaded = client.get(f"/outputs/{processing.id}")
 
     assert "Processing History" in page.text
+    assert "Output Library" in page.text
+    assert "Review transcript" in page.text
+    assert "Quick setup" in page.text
+    assert "Review and run" in page.text
     assert '<details class="pipeline-results"' in page.text
     assert str(output) not in page.text
     assert "Open output" in page.text
     assert downloaded.status_code == 200
     assert downloaded.text == "transcript output"
+
+
+def test_transcript_editor_preserves_original_and_saves_edited_copy(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "test.sqlite3"
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f"[app]\ndatabase_path = '{db_path}'\n"
+        f"[canvas]\nbase_url = 'https://canvas.example'\nstate_path = '{tmp_path / 'state.json'}'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DLM_CONFIG", str(config))
+    db = Database(db_path)
+    course = db.upsert_course(Course(canvas_id="1", code="DENT1000", name="Dental"))
+    lecture = db.upsert_lecture(
+        Lecture(source_id="rec-1", course_id=course.id or 0, original_title="Terminology")
+    )
+    original = tmp_path / "lecture.txt"
+    original.write_text("uncorrected term\n", encoding="utf-8")
+    processing = db.upsert_processing(
+        ProcessingRecord(
+            lecture_id=lecture.id or 0,
+            stage="canonical_transcript",
+            status="complete",
+            output_file=str(original),
+        )
+    )
+    client = TestClient(create_app())
+
+    editor = client.get(f"/transcripts/{processing.id}")
+    saved = client.post(
+        f"/transcripts/{processing.id}/save",
+        data={"transcript": "corrected term"},
+        follow_redirects=False,
+    )
+    edited = tmp_path / "lecture.edited.txt"
+
+    assert editor.status_code == 200
+    assert "Review before generating notes" in editor.text
+    assert saved.status_code == 303
+    assert original.read_text(encoding="utf-8") == "uncorrected term\n"
+    assert edited.read_text(encoding="utf-8") == "corrected term\n"
+    assert db.get_processing(processing.id or 0)["output_file"] == str(edited)
+
+
+def test_note_exports_anki_csv_and_combined_study_guide(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "test.sqlite3"
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f"[app]\ndatabase_path = '{db_path}'\n"
+        f"[canvas]\nbase_url = 'https://canvas.example'\nstate_path = '{tmp_path / 'state.json'}'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DLM_CONFIG", str(config))
+    db = Database(db_path)
+    course = db.upsert_course(Course(canvas_id="1", code="DENT1000", name="Dental"))
+    lecture = db.upsert_lecture(
+        Lecture(source_id="rec-1", course_id=course.id or 0, original_title="Pulp Biology")
+    )
+    processing = db.upsert_processing(
+        ProcessingRecord(lecture_id=lecture.id or 0, stage="ai_note", status="complete")
+    )
+    db.upsert_note_draft(
+        NoteDraft(
+            processing_id=processing.id or 0,
+            lecture_id=lecture.id or 0,
+            markdown="# Notes\n\nQ: What is pulp?\nA: Dental connective tissue.\n",
+        )
+    )
+    client = TestClient(create_app())
+
+    anki = client.get(f"/notes/{processing.id}/anki.csv")
+    guide = client.post(
+        "/study-guide",
+        data={"lecture_ids": str(lecture.id), "course_code": "DENT1000"},
+    )
+
+    assert anki.status_code == 200
+    assert "Front,Back" in anki.text
+    assert "What is pulp?,Dental connective tissue." in anki.text
+    assert guide.status_code == 200
+    assert "# DENT1000 Combined Study Guide" in guide.text
+    assert "# Pulp Biology" in guide.text
