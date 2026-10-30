@@ -85,7 +85,7 @@ def test_lecture_stem_uses_course_topic_local_number_and_title() -> None:
 def test_ffmpeg_executable_finds_packaged_windows_helper(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    helper = tmp_path / "ffmpeg" / "ffmpeg.exe"
+    helper = tmp_path / "ffmpeg" / "ffmpeg-win64.exe"
     helper.parent.mkdir()
     helper.write_bytes(b"packaged ffmpeg")
     monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
