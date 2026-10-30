@@ -2,60 +2,48 @@ from __future__ import annotations
 
 import os
 
+import httpx
+
 from app.ai.base import AIProvider, AIRequest
 
 
-class OpenAIProvider(AIProvider):
-    name = "openai"
-
-    def __init__(self, api_key: str | None = None) -> None:
-        self.api_key = api_key
-
-    async def generate_note(self, request: AIRequest) -> str:
-        try:
-            from openai import AsyncOpenAI
-        except ImportError as exc:
-            raise RuntimeError(
-                "Install the ai extra to use OpenAI: pip install -e '.[ai]'"
-            ) from exc
-        api_key = self.api_key or os.environ.get("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError("No OpenAI API key is configured.")
-        client = AsyncOpenAI(api_key=api_key)
-        response = await client.chat.completions.create(
-            model=request.model,
-            temperature=request.temperature,
-            max_completion_tokens=request.max_output_tokens,
-            messages=[
-                {"role": "system", "content": request.system_prompt},
-                {"role": "user", "content": request.user_prompt},
-            ],
-        )
-        return response.choices[0].message.content or ""
-
-
 class OpenAICompatibleProvider(AIProvider):
+    max_tokens_field = "max_tokens"
+
     def __init__(self, *, name: str, base_url: str, api_key: str) -> None:
         self.name = name
         self.base_url = base_url
         self.api_key = api_key
 
     async def generate_note(self, request: AIRequest) -> str:
-        try:
-            from openai import AsyncOpenAI
-        except ImportError as exc:
-            raise RuntimeError("Install the ai extra to use OpenAI-compatible endpoints.") from exc
-        client = AsyncOpenAI(base_url=self.base_url, api_key=self.api_key)
-        response = await client.chat.completions.create(
-            model=request.model,
-            temperature=request.temperature,
-            max_tokens=request.max_output_tokens,
-            messages=[
-                {"role": "system", "content": request.system_prompt},
-                {"role": "user", "content": request.user_prompt},
-            ],
-        )
-        return response.choices[0].message.content or ""
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(
+                f"{self.base_url.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json={
+                    "model": request.model,
+                    "temperature": request.temperature,
+                    self.max_tokens_field: request.max_output_tokens,
+                    "messages": [
+                        {"role": "system", "content": request.system_prompt},
+                        {"role": "user", "content": request.user_prompt},
+                    ],
+                },
+            )
+            response.raise_for_status()
+        choices = response.json().get("choices", [])
+        return str(choices[0].get("message", {}).get("content", "")) if choices else ""
+
+
+class OpenAIProvider(OpenAICompatibleProvider):
+    name = "openai"
+    max_tokens_field = "max_completion_tokens"
+
+    def __init__(self, api_key: str | None = None) -> None:
+        key = api_key or os.environ.get("OPENAI_API_KEY")
+        if not key:
+            raise RuntimeError("No OpenAI API key is configured.")
+        super().__init__(name=self.name, base_url="https://api.openai.com/v1", api_key=key)
 
 
 class LocalOpenAICompatibleProvider(OpenAICompatibleProvider):

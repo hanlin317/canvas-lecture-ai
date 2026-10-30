@@ -20,8 +20,7 @@ from urllib.parse import urlencode, urlparse
 from uuid import uuid4
 
 import httpx
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from Crypto.Signature import eddsa
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -171,11 +170,11 @@ def _write_update_cache(payload: dict) -> None:
 
 def _verify_update_manifest(manifest_bytes: bytes, signature_bytes: bytes) -> dict:
     try:
-        public_key = Ed25519PublicKey.from_public_bytes(
+        public_key = eddsa.import_public_key(
             base64.b64decode(UPDATE_PUBLIC_KEY_B64, validate=True)
         )
-        public_key.verify(signature_bytes, manifest_bytes)
-    except (InvalidSignature, ValueError) as exc:
+        eddsa.new(public_key, "rfc8032").verify(manifest_bytes, signature_bytes)
+    except ValueError as exc:
         raise RuntimeError("The update manifest signature is invalid.") from exc
     try:
         manifest = json.loads(manifest_bytes)
