@@ -4,7 +4,7 @@ All notable changes to Canvas Lecture AI are documented here. The project follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html), and published release assets are
 immutable.
 
-## [Unreleased]
+## [0.7.0] - 2026-10-31
 
 ### Added
 
@@ -143,7 +143,7 @@ immutable.
 - Local SQLite state, processing history, course grouping, and a browser-based management interface.
 - Apple Silicon DMG packaging and the first GitHub release workflow.
 
-[Unreleased]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.6.0...HEAD
+[0.7.0]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.3.0...v0.4.0
