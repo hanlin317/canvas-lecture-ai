@@ -158,6 +158,12 @@ def prepare_runtime_environment() -> Path | None:
         for candidate in bundled_resource("ffmpeg").glob("ffmpeg*"):
             if candidate.is_file():
                 os.environ["DLM_FFMPEG"] = str(candidate)
+                os.environ.setdefault("IMAGEIO_FFMPEG_EXE", str(candidate))
+                path_entries = os.environ.get("PATH", "").split(os.pathsep)
+                if str(candidate.parent) not in path_entries:
+                    os.environ["PATH"] = os.pathsep.join(
+                        [str(candidate.parent), *filter(None, path_entries)]
+                    )
                 break
 
     os.chdir(data_dir)

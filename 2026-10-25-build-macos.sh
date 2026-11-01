@@ -45,7 +45,21 @@ if [[ ! -e "$APP_PATH/Contents/Frameworks/playwright-browsers" ]]; then
   ln -s ../Resources/playwright-browsers "$APP_PATH/Contents/Frameworks/playwright-browsers"
 fi
 SIGNING_IDENTITY="${MACOS_SIGNING_IDENTITY:--}"
-codesign --force --deep --options runtime --sign "$SIGNING_IDENTITY" "$APP_PATH"
+FFMPEG_DIR="$APP_PATH/Contents/Frameworks/ffmpeg"
+FFMPEG_BIN="$(find "$FFMPEG_DIR" -maxdepth 1 -type f -name 'ffmpeg*' | head -n 1)"
+if [[ -z "$FFMPEG_BIN" ]]; then
+  echo "Bundled FFmpeg executable was not found." >&2
+  exit 1
+fi
+ln -sfn "$(basename "$FFMPEG_BIN")" "$FFMPEG_DIR/ffmpeg"
+
+if [[ "$SIGNING_IDENTITY" == "-" ]]; then
+  # PyInstaller uses ad-hoc signatures by default. Do not combine them with
+  # hardened runtime, because library validation then rejects Python.framework.
+  codesign --force --deep --sign - "$APP_PATH"
+else
+  codesign --force --deep --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$APP_PATH"
+fi
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
 mkdir -p "$STAGE_DIR"
