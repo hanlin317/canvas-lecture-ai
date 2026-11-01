@@ -115,10 +115,38 @@ jobs:
             'dist/Canvas Lecture AI.app/Contents/MacOS/Canvas Lecture AI' \
             self-check --output "$RUNNER_TEMP/dlm-self-check.json"
           python -c 'import json, os; data=json.load(open(os.environ["RUNNER_TEMP"] + "/dlm-self-check.json")); assert data["status"] == "ok" and data["local_whisper"] and data["whisper_engine"] == "${{ matrix.whisper }}" and all(data["document_exporters"].values())'
+          test -x 'dist/Canvas Lecture AI.app/Contents/Frameworks/ffmpeg/ffmpeg'
           codesign --verify --deep --strict 'dist/Canvas Lecture AI.app'
           APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 'dist/Canvas Lecture AI.app/Contents/Info.plist')"
           test "$APP_VERSION" = "${{ needs.validate.outputs.version }}"
           cd dist && shasum -a 256 -c *.dmg.sha256
+      - name: Smoke test normal macOS application launch
+        run: |
+          SMOKE_DIR="$RUNNER_TEMP/2026-11-01-launch-smoke"
+          mkdir -p "$SMOKE_DIR"
+          cat > "$SMOKE_DIR/config.toml" <<'EOF'
+          [app]
+          host = "127.0.0.1"
+          port = 18117
+          onboarding_complete = true
+          EOF
+          BROWSER=/usr/bin/false DLM_DATA_DIR="$SMOKE_DIR" \
+            'dist/Canvas Lecture AI.app/Contents/MacOS/Canvas Lecture AI' \
+            > "$SMOKE_DIR/application.log" 2>&1 &
+          APP_PID=$!
+          trap 'kill -TERM "$APP_PID" 2>/dev/null || true' EXIT
+          for attempt in {1..120}; do
+            if curl --fail --silent --show-error --output /dev/null http://127.0.0.1:18117/; then
+              exit 0
+            fi
+            if ! kill -0 "$APP_PID" 2>/dev/null; then
+              cat "$SMOKE_DIR/application.log"
+              exit 1
+            fi
+            sleep 0.25
+          done
+          cat "$SMOKE_DIR/application.log"
+          exit 1
       - uses: actions/upload-artifact@v4
         with:
           name: canvas-lecture-ai-v${{ needs.validate.outputs.version }}-macos-${{ matrix.arch }}

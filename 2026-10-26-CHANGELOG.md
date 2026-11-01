@@ -4,7 +4,7 @@ All notable changes to Canvas Lecture AI are documented here. The project follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html), and published release assets are
 immutable.
 
-## [Unreleased]
+## [0.7.0] - 2026-11-01
 
 ### Added
 
@@ -27,6 +27,15 @@ immutable.
   privacy, recovery, updates, and troubleshooting.
 - Limited dashboard retry controls to resumable pipeline work so failed discovery jobs return users
   to the relevant course instead.
+
+### Fixed
+
+- Restored macOS application launch by keeping unsigned builds ad-hoc signed without hardened
+  runtime library validation. Developer ID builds continue to use hardened runtime and timestamping.
+- Made bundled FFmpeg discoverable by MLX Whisper so local transcription no longer fails when a
+  system-wide FFmpeg installation is absent.
+- Added a packaged macOS launch smoke test so releases verify the normal application entry point,
+  not only the command-line self-check.
 
 ## [0.6.0] - 2026-10-29
 
@@ -143,7 +152,7 @@ immutable.
 - Local SQLite state, processing history, course grouping, and a browser-based management interface.
 - Apple Silicon DMG packaging and the first GitHub release workflow.
 
-[Unreleased]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.6.0...HEAD
+[0.7.0]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/hanlin317/canvas-lecture-ai/compare/v0.3.0...v0.4.0

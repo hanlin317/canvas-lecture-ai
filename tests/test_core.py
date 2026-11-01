@@ -583,7 +583,9 @@ def test_packaged_runtime_bootstraps_private_application_support(
     monkeypatch.setenv("DLM_DATA_DIR", str(data_dir))
     monkeypatch.delenv("DLM_CONFIG", raising=False)
     monkeypatch.delenv("DLM_FFMPEG", raising=False)
+    monkeypatch.delenv("IMAGEIO_FFMPEG_EXE", raising=False)
     monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.setattr(app_config, "is_packaged", lambda: True)
     monkeypatch.setattr(app_config, "bundled_resource", lambda name: bundle / name)
 
@@ -597,6 +599,8 @@ def test_packaged_runtime_bootstraps_private_application_support(
     assert os.environ["DLM_CONFIG"] == str(data_dir / "config.toml")
     assert os.environ["PLAYWRIGHT_BROWSERS_PATH"] == str(bundle / "playwright-browsers")
     assert os.environ["DLM_FFMPEG"] == str(ffmpeg)
+    assert os.environ["IMAGEIO_FFMPEG_EXE"] == str(ffmpeg)
+    assert os.environ["PATH"].split(os.pathsep)[0] == str(ffmpeg.parent)
 
 
 def test_windows_application_support_uses_local_app_data(tmp_path: Path, monkeypatch) -> None:
